@@ -167,7 +167,10 @@ func wrapperReady(instance WrapperInstance) {
 	region := parseStorefrontID(string(storefrontID))
 	instance.Region = region
 	InsertInstance(instance)
-	DispatcherInstance.AddInstance(instance)
+	err = SchedulerInstance.AddInstance(&instance)
+	if err != nil {
+		return
+	}
 	instance.DoLogin = false
 	go LoginDoneHandler(instance.Id)
 	log.Info(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), " Wrapper ready")
@@ -175,7 +178,10 @@ func wrapperReady(instance WrapperInstance) {
 
 func wrapperDown(instance WrapperInstance) {
 	log.Info(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), " Wrapper Down")
-	DispatcherInstance.RemoveInstance(instance)
+	err := SchedulerInstance.RemoveInstance(instance.Id)
+	if err != nil {
+		return
+	}
 	RemoveInstance(instance)
 	if !instance.DoLogin {
 		go WrapperStart(instance.Id)

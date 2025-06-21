@@ -14,7 +14,6 @@ import (
 	"net"
 	"os"
 	"os/user"
-	"sync"
 	pb "wrapper-manager/proto"
 )
 
@@ -129,7 +128,7 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 			})
 			continue
 		}
-		DispatcherInstance.AddTask(&task)
+		SchedulerInstance.Submit(&task)
 		result := <-task.Result
 		if result.Error != nil {
 			_ = stream.Send(&pb.DecryptReply{
@@ -311,11 +310,7 @@ func main() {
 		DownloadStorefrontIds()
 	}
 
-	DispatcherInstance = &Dispatcher{
-		mu:        sync.RWMutex{},
-		buckets:   make(map[string]map[string][]*Task),
-		instances: make([]*DecryptInstance, 0),
-	}
+	SchedulerInstance = NewScheduler(3)
 
 	Instances = make([]*WrapperInstance, 0)
 	if _, err := os.Stat("data/storefront_ids.json"); !errors.Is(err, os.ErrNotExist) {
