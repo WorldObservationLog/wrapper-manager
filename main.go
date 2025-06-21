@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"os/user"
+	"slices"
 	pb "wrapper-manager/proto"
 )
 
@@ -32,7 +33,9 @@ func (s *server) Status(c context.Context, req *emptypb.Empty) (*pb.StatusReply,
 	}
 	var regions []string
 	for _, instance := range Instances {
-		regions = append(regions, instance.Region)
+		if !slices.Contains(regions, instance.Region) {
+			regions = append(regions, instance.Region)
+		}
 	}
 	return &pb.StatusReply{
 		Header: &pb.ReplyHeader{
