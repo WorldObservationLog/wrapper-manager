@@ -232,7 +232,7 @@ func (s *server) Lyrics(c context.Context, req *pb.LyricsRequest) (*pb.LyricsRep
 			}, nil
 		}
 	}
-	token, err := getToken()
+	token, err := GetToken()
 	if err != nil {
 		return &pb.LyricsReply{
 			Header: &pb.ReplyHeader{
@@ -267,6 +267,125 @@ func (s *server) Lyrics(c context.Context, req *pb.LyricsRequest) (*pb.LyricsRep
 		Data: &pb.LyricsDataResponse{
 			AdamId: req.Data.AdamId,
 			Lyrics: lyrics,
+		},
+	}, nil
+}
+
+func (s *server) WebPlayback(c context.Context, req *pb.WebPlaybackRequest) (*pb.WebPlaybackReply, error) {
+	p, ok := peer.FromContext(c)
+	if ok {
+		log.Infof("webplayback request from %s", p.Addr.String())
+	} else {
+		log.Infof("webplayback request from unknown peer")
+	}
+	instanceID := SelectInstance(req.Data.AdamId)
+	if instanceID == "" {
+		return &pb.WebPlaybackReply{
+			Header: &pb.ReplyHeader{
+				Code: -1,
+				Msg:  "no available instance",
+			},
+			Data: nil,
+		}, nil
+	}
+	token, err := GetToken()
+	if err != nil {
+		return &pb.WebPlaybackReply{
+			Header: &pb.ReplyHeader{
+				Code: -1,
+				Msg:  err.Error(),
+			},
+			Data: nil,
+		}, nil
+	}
+	musicToken, err := GetMusicToken(GetInstance(instanceID))
+	if err != nil {
+		return &pb.WebPlaybackReply{
+			Header: &pb.ReplyHeader{
+				Code: -1,
+				Msg:  err.Error(),
+			},
+			Data: nil,
+		}, nil
+	}
+	m3u8, err := GetWebPlayback(req.Data.AdamId, token, musicToken)
+	if err != nil {
+		return &pb.WebPlaybackReply{
+			Header: &pb.ReplyHeader{
+				Code: -1,
+				Msg:  err.Error(),
+			},
+			Data: nil,
+		}, nil
+	}
+	return &pb.WebPlaybackReply{
+		Header: &pb.ReplyHeader{
+			Code: 0,
+			Msg:  "SUCCESS",
+		},
+		Data: &pb.WebPlaybackDataResponse{
+			AdamId: req.Data.AdamId,
+			M3U8:   m3u8,
+		},
+	}, nil
+}
+
+func (s *server) License(c context.Context, req *pb.LicenseRequest) (*pb.LicenseReply, error) {
+	p, ok := peer.FromContext(c)
+	if ok {
+		log.Infof("webplayback request from %s", p.Addr.String())
+	} else {
+		log.Infof("webplayback request from unknown peer")
+	}
+	instanceID := SelectInstance(req.Data.AdamId)
+	if instanceID == "" {
+		return &pb.LicenseReply{
+			Header: &pb.ReplyHeader{
+				Code: -1,
+				Msg:  "no available instance",
+			},
+			Data: nil,
+		}, nil
+	}
+	token, err := GetToken()
+	if err != nil {
+		return &pb.LicenseReply{
+			Header: &pb.ReplyHeader{
+				Code: -1,
+				Msg:  err.Error(),
+			},
+			Data: nil,
+		}, nil
+	}
+	musicToken, err := GetMusicToken(GetInstance(instanceID))
+	if err != nil {
+		return &pb.LicenseReply{
+			Header: &pb.ReplyHeader{
+				Code: -1,
+				Msg:  err.Error(),
+			},
+			Data: nil,
+		}, nil
+	}
+	license, renew, err := GetLicense(req.Data.AdamId, req.Data.Challenge, req.Data.Uri, token, musicToken)
+	if err != nil {
+		return &pb.LicenseReply{
+			Header: &pb.ReplyHeader{
+				Code: -1,
+				Msg:  err.Error(),
+			},
+			Data: nil,
+		}, nil
+	}
+	return &pb.LicenseReply{
+		Header: &pb.ReplyHeader{
+			Code: 0,
+			Msg:  "SUCCESS",
+		},
+		Data: &pb.LicenseDataResponse{
+			AdamId:  req.Data.AdamId,
+			License: license,
+			Renew:   int64(renew),
 		},
 	}, nil
 }

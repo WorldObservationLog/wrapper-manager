@@ -11,6 +11,8 @@ service WrapperManagerService {
   rpc Decrypt (stream DecryptRequest) returns (stream DecryptReply);
   rpc M3U8 (M3U8Request) returns (M3U8Reply);
   rpc Lyrics (LyricsRequest) returns (LyricsReply);
+  rpc License (LicenseRequest) returns (LicenseReply);
+  rpc WebPlayback (WebPlaybackRequest) returns (WebPlaybackReply);
 }
 
 // 通用响应头结构
@@ -42,10 +44,12 @@ message LoginData {
   string username = 1;
   string password = 2;
   int32 two_step_code = 3;
+  string period = 4;
 }
 
 message LoginReply {
   ReplyHeader header = 1;
+  LoginData data = 2;
 }
 
 // ---------- Decrypt ----------
@@ -106,6 +110,49 @@ message LyricsReply {
 message LyricsDataResponse {
   string adam_id = 1;
   string lyrics = 2;
+}
+
+// License
+
+message LicenseRequest {
+  LicenseDataRequest data = 1;
+}
+
+message LicenseDataRequest {
+  string adam_id = 1;
+  string challenge = 2;
+  string uri = 3;
+}
+
+message LicenseReply {
+  ReplyHeader header = 1;
+  LicenseDataResponse data = 2;
+}
+
+message LicenseDataResponse {
+  string adam_id = 1;
+  string license = 2;
+  int64 renew = 3;
+}
+
+// License
+
+message WebPlaybackRequest {
+  WebPlaybackDataRequest data = 1;
+}
+
+message WebPlaybackDataRequest {
+  string adam_id = 1;
+}
+
+message WebPlaybackReply {
+  ReplyHeader header = 1;
+  WebPlaybackDataResponse data = 2;
+}
+
+message WebPlaybackDataResponse {
+  string adam_id = 1;
+  string m3u8 = 2;
 }
 
 // ---------- Error ----------

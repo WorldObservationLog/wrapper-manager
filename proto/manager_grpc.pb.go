@@ -20,11 +20,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WrapperManagerService_Status_FullMethodName  = "/manager.v1.WrapperManagerService/Status"
-	WrapperManagerService_Login_FullMethodName   = "/manager.v1.WrapperManagerService/Login"
-	WrapperManagerService_Decrypt_FullMethodName = "/manager.v1.WrapperManagerService/Decrypt"
-	WrapperManagerService_M3U8_FullMethodName    = "/manager.v1.WrapperManagerService/M3U8"
-	WrapperManagerService_Lyrics_FullMethodName  = "/manager.v1.WrapperManagerService/Lyrics"
+	WrapperManagerService_Status_FullMethodName      = "/manager.v1.WrapperManagerService/Status"
+	WrapperManagerService_Login_FullMethodName       = "/manager.v1.WrapperManagerService/Login"
+	WrapperManagerService_Decrypt_FullMethodName     = "/manager.v1.WrapperManagerService/Decrypt"
+	WrapperManagerService_M3U8_FullMethodName        = "/manager.v1.WrapperManagerService/M3U8"
+	WrapperManagerService_Lyrics_FullMethodName      = "/manager.v1.WrapperManagerService/Lyrics"
+	WrapperManagerService_License_FullMethodName     = "/manager.v1.WrapperManagerService/License"
+	WrapperManagerService_WebPlayback_FullMethodName = "/manager.v1.WrapperManagerService/WebPlayback"
 )
 
 // WrapperManagerServiceClient is the client API for WrapperManagerService service.
@@ -36,6 +38,8 @@ type WrapperManagerServiceClient interface {
 	Decrypt(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[DecryptRequest, DecryptReply], error)
 	M3U8(ctx context.Context, in *M3U8Request, opts ...grpc.CallOption) (*M3U8Reply, error)
 	Lyrics(ctx context.Context, in *LyricsRequest, opts ...grpc.CallOption) (*LyricsReply, error)
+	License(ctx context.Context, in *LicenseRequest, opts ...grpc.CallOption) (*LicenseReply, error)
+	WebPlayback(ctx context.Context, in *WebPlaybackRequest, opts ...grpc.CallOption) (*WebPlaybackReply, error)
 }
 
 type wrapperManagerServiceClient struct {
@@ -102,6 +106,26 @@ func (c *wrapperManagerServiceClient) Lyrics(ctx context.Context, in *LyricsRequ
 	return out, nil
 }
 
+func (c *wrapperManagerServiceClient) License(ctx context.Context, in *LicenseRequest, opts ...grpc.CallOption) (*LicenseReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LicenseReply)
+	err := c.cc.Invoke(ctx, WrapperManagerService_License_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *wrapperManagerServiceClient) WebPlayback(ctx context.Context, in *WebPlaybackRequest, opts ...grpc.CallOption) (*WebPlaybackReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WebPlaybackReply)
+	err := c.cc.Invoke(ctx, WrapperManagerService_WebPlayback_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WrapperManagerServiceServer is the server API for WrapperManagerService service.
 // All implementations must embed UnimplementedWrapperManagerServiceServer
 // for forward compatibility.
@@ -111,6 +135,8 @@ type WrapperManagerServiceServer interface {
 	Decrypt(grpc.BidiStreamingServer[DecryptRequest, DecryptReply]) error
 	M3U8(context.Context, *M3U8Request) (*M3U8Reply, error)
 	Lyrics(context.Context, *LyricsRequest) (*LyricsReply, error)
+	License(context.Context, *LicenseRequest) (*LicenseReply, error)
+	WebPlayback(context.Context, *WebPlaybackRequest) (*WebPlaybackReply, error)
 	mustEmbedUnimplementedWrapperManagerServiceServer()
 }
 
@@ -135,6 +161,12 @@ func (UnimplementedWrapperManagerServiceServer) M3U8(context.Context, *M3U8Reque
 }
 func (UnimplementedWrapperManagerServiceServer) Lyrics(context.Context, *LyricsRequest) (*LyricsReply, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Lyrics not implemented")
+}
+func (UnimplementedWrapperManagerServiceServer) License(context.Context, *LicenseRequest) (*LicenseReply, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method License not implemented")
+}
+func (UnimplementedWrapperManagerServiceServer) WebPlayback(context.Context, *WebPlaybackRequest) (*WebPlaybackReply, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method WebPlayback not implemented")
 }
 func (UnimplementedWrapperManagerServiceServer) mustEmbedUnimplementedWrapperManagerServiceServer() {}
 func (UnimplementedWrapperManagerServiceServer) testEmbeddedByValue()                               {}
@@ -225,6 +257,42 @@ func _WrapperManagerService_Lyrics_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WrapperManagerService_License_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LicenseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WrapperManagerServiceServer).License(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WrapperManagerService_License_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WrapperManagerServiceServer).License(ctx, req.(*LicenseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WrapperManagerService_WebPlayback_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WebPlaybackRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WrapperManagerServiceServer).WebPlayback(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WrapperManagerService_WebPlayback_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WrapperManagerServiceServer).WebPlayback(ctx, req.(*WebPlaybackRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WrapperManagerService_ServiceDesc is the grpc.ServiceDesc for WrapperManagerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -243,6 +311,14 @@ var WrapperManagerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Lyrics",
 			Handler:    _WrapperManagerService_Lyrics_Handler,
+		},
+		{
+			MethodName: "License",
+			Handler:    _WrapperManagerService_License_Handler,
+		},
+		{
+			MethodName: "WebPlayback",
+			Handler:    _WrapperManagerService_WebPlayback_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

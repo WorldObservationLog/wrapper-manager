@@ -236,6 +236,7 @@ type LoginData struct {
 	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
 	Password      string                 `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
 	TwoStepCode   int32                  `protobuf:"varint,3,opt,name=two_step_code,json=twoStepCode,proto3" json:"two_step_code,omitempty"`
+	Period        string                 `protobuf:"bytes,4,opt,name=period,proto3" json:"period,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -291,9 +292,17 @@ func (x *LoginData) GetTwoStepCode() int32 {
 	return 0
 }
 
+func (x *LoginData) GetPeriod() string {
+	if x != nil {
+		return x.Period
+	}
+	return ""
+}
+
 type LoginReply struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Header        *ReplyHeader           `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
+	Data          *LoginData             `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -331,6 +340,13 @@ func (*LoginReply) Descriptor() ([]byte, []int) {
 func (x *LoginReply) GetHeader() *ReplyHeader {
 	if x != nil {
 		return x.Header
+	}
+	return nil
+}
+
+func (x *LoginReply) GetData() *LoginData {
+	if x != nil {
+		return x.Data
 	}
 	return nil
 }
@@ -899,6 +915,414 @@ func (x *LyricsDataResponse) GetLyrics() string {
 	return ""
 }
 
+type LicenseRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Data          *LicenseDataRequest    `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LicenseRequest) Reset() {
+	*x = LicenseRequest{}
+	mi := &file_proto_manager_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LicenseRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LicenseRequest) ProtoMessage() {}
+
+func (x *LicenseRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_manager_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LicenseRequest.ProtoReflect.Descriptor instead.
+func (*LicenseRequest) Descriptor() ([]byte, []int) {
+	return file_proto_manager_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *LicenseRequest) GetData() *LicenseDataRequest {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type LicenseDataRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AdamId        string                 `protobuf:"bytes,1,opt,name=adam_id,json=adamId,proto3" json:"adam_id,omitempty"`
+	Challenge     string                 `protobuf:"bytes,2,opt,name=challenge,proto3" json:"challenge,omitempty"`
+	Uri           string                 `protobuf:"bytes,3,opt,name=uri,proto3" json:"uri,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LicenseDataRequest) Reset() {
+	*x = LicenseDataRequest{}
+	mi := &file_proto_manager_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LicenseDataRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LicenseDataRequest) ProtoMessage() {}
+
+func (x *LicenseDataRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_manager_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LicenseDataRequest.ProtoReflect.Descriptor instead.
+func (*LicenseDataRequest) Descriptor() ([]byte, []int) {
+	return file_proto_manager_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *LicenseDataRequest) GetAdamId() string {
+	if x != nil {
+		return x.AdamId
+	}
+	return ""
+}
+
+func (x *LicenseDataRequest) GetChallenge() string {
+	if x != nil {
+		return x.Challenge
+	}
+	return ""
+}
+
+func (x *LicenseDataRequest) GetUri() string {
+	if x != nil {
+		return x.Uri
+	}
+	return ""
+}
+
+type LicenseReply struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Header        *ReplyHeader           `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
+	Data          *LicenseDataResponse   `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LicenseReply) Reset() {
+	*x = LicenseReply{}
+	mi := &file_proto_manager_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LicenseReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LicenseReply) ProtoMessage() {}
+
+func (x *LicenseReply) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_manager_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LicenseReply.ProtoReflect.Descriptor instead.
+func (*LicenseReply) Descriptor() ([]byte, []int) {
+	return file_proto_manager_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *LicenseReply) GetHeader() *ReplyHeader {
+	if x != nil {
+		return x.Header
+	}
+	return nil
+}
+
+func (x *LicenseReply) GetData() *LicenseDataResponse {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type LicenseDataResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AdamId        string                 `protobuf:"bytes,1,opt,name=adam_id,json=adamId,proto3" json:"adam_id,omitempty"`
+	License       string                 `protobuf:"bytes,2,opt,name=license,proto3" json:"license,omitempty"`
+	Renew         int64                  `protobuf:"varint,3,opt,name=renew,proto3" json:"renew,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LicenseDataResponse) Reset() {
+	*x = LicenseDataResponse{}
+	mi := &file_proto_manager_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LicenseDataResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LicenseDataResponse) ProtoMessage() {}
+
+func (x *LicenseDataResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_manager_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LicenseDataResponse.ProtoReflect.Descriptor instead.
+func (*LicenseDataResponse) Descriptor() ([]byte, []int) {
+	return file_proto_manager_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *LicenseDataResponse) GetAdamId() string {
+	if x != nil {
+		return x.AdamId
+	}
+	return ""
+}
+
+func (x *LicenseDataResponse) GetLicense() string {
+	if x != nil {
+		return x.License
+	}
+	return ""
+}
+
+func (x *LicenseDataResponse) GetRenew() int64 {
+	if x != nil {
+		return x.Renew
+	}
+	return 0
+}
+
+type WebPlaybackRequest struct {
+	state         protoimpl.MessageState  `protogen:"open.v1"`
+	Data          *WebPlaybackDataRequest `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WebPlaybackRequest) Reset() {
+	*x = WebPlaybackRequest{}
+	mi := &file_proto_manager_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WebPlaybackRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WebPlaybackRequest) ProtoMessage() {}
+
+func (x *WebPlaybackRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_manager_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WebPlaybackRequest.ProtoReflect.Descriptor instead.
+func (*WebPlaybackRequest) Descriptor() ([]byte, []int) {
+	return file_proto_manager_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *WebPlaybackRequest) GetData() *WebPlaybackDataRequest {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type WebPlaybackDataRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AdamId        string                 `protobuf:"bytes,1,opt,name=adam_id,json=adamId,proto3" json:"adam_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WebPlaybackDataRequest) Reset() {
+	*x = WebPlaybackDataRequest{}
+	mi := &file_proto_manager_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WebPlaybackDataRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WebPlaybackDataRequest) ProtoMessage() {}
+
+func (x *WebPlaybackDataRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_manager_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WebPlaybackDataRequest.ProtoReflect.Descriptor instead.
+func (*WebPlaybackDataRequest) Descriptor() ([]byte, []int) {
+	return file_proto_manager_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *WebPlaybackDataRequest) GetAdamId() string {
+	if x != nil {
+		return x.AdamId
+	}
+	return ""
+}
+
+type WebPlaybackReply struct {
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	Header        *ReplyHeader             `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
+	Data          *WebPlaybackDataResponse `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WebPlaybackReply) Reset() {
+	*x = WebPlaybackReply{}
+	mi := &file_proto_manager_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WebPlaybackReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WebPlaybackReply) ProtoMessage() {}
+
+func (x *WebPlaybackReply) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_manager_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WebPlaybackReply.ProtoReflect.Descriptor instead.
+func (*WebPlaybackReply) Descriptor() ([]byte, []int) {
+	return file_proto_manager_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *WebPlaybackReply) GetHeader() *ReplyHeader {
+	if x != nil {
+		return x.Header
+	}
+	return nil
+}
+
+func (x *WebPlaybackReply) GetData() *WebPlaybackDataResponse {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type WebPlaybackDataResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AdamId        string                 `protobuf:"bytes,1,opt,name=adam_id,json=adamId,proto3" json:"adam_id,omitempty"`
+	M3U8          string                 `protobuf:"bytes,2,opt,name=m3u8,proto3" json:"m3u8,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WebPlaybackDataResponse) Reset() {
+	*x = WebPlaybackDataResponse{}
+	mi := &file_proto_manager_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WebPlaybackDataResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WebPlaybackDataResponse) ProtoMessage() {}
+
+func (x *WebPlaybackDataResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_manager_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WebPlaybackDataResponse.ProtoReflect.Descriptor instead.
+func (*WebPlaybackDataResponse) Descriptor() ([]byte, []int) {
+	return file_proto_manager_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *WebPlaybackDataResponse) GetAdamId() string {
+	if x != nil {
+		return x.AdamId
+	}
+	return ""
+}
+
+func (x *WebPlaybackDataResponse) GetM3U8() string {
+	if x != nil {
+		return x.M3U8
+	}
+	return ""
+}
+
 type ErrorReply struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Header        *ReplyHeader           `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
@@ -908,7 +1332,7 @@ type ErrorReply struct {
 
 func (x *ErrorReply) Reset() {
 	*x = ErrorReply{}
-	mi := &file_proto_manager_proto_msgTypes[17]
+	mi := &file_proto_manager_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -920,7 +1344,7 @@ func (x *ErrorReply) String() string {
 func (*ErrorReply) ProtoMessage() {}
 
 func (x *ErrorReply) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_manager_proto_msgTypes[17]
+	mi := &file_proto_manager_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -933,7 +1357,7 @@ func (x *ErrorReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErrorReply.ProtoReflect.Descriptor instead.
 func (*ErrorReply) Descriptor() ([]byte, []int) {
-	return file_proto_manager_proto_rawDescGZIP(), []int{17}
+	return file_proto_manager_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ErrorReply) GetHeader() *ReplyHeader {
@@ -961,14 +1385,16 @@ const file_proto_manager_proto_rawDesc = "" +
 	"\aregions\x18\x02 \x03(\tR\aregions\x12!\n" +
 	"\fclient_count\x18\x03 \x01(\x05R\vclientCount\"9\n" +
 	"\fLoginRequest\x12)\n" +
-	"\x04data\x18\x01 \x01(\v2\x15.manager.v1.LoginDataR\x04data\"g\n" +
+	"\x04data\x18\x01 \x01(\v2\x15.manager.v1.LoginDataR\x04data\"\x7f\n" +
 	"\tLoginData\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1a\n" +
 	"\bpassword\x18\x02 \x01(\tR\bpassword\x12\"\n" +
-	"\rtwo_step_code\x18\x03 \x01(\x05R\vtwoStepCode\"=\n" +
+	"\rtwo_step_code\x18\x03 \x01(\x05R\vtwoStepCode\x12\x16\n" +
+	"\x06period\x18\x04 \x01(\tR\x06period\"h\n" +
 	"\n" +
 	"LoginReply\x12/\n" +
-	"\x06header\x18\x01 \x01(\v2\x17.manager.v1.ReplyHeaderR\x06header\"=\n" +
+	"\x06header\x18\x01 \x01(\v2\x17.manager.v1.ReplyHeaderR\x06header\x12)\n" +
+	"\x04data\x18\x02 \x01(\v2\x15.manager.v1.LoginDataR\x04data\"=\n" +
 	"\x0eDecryptRequest\x12+\n" +
 	"\x04data\x18\x01 \x01(\v2\x17.manager.v1.DecryptDataR\x04data\"l\n" +
 	"\fDecryptReply\x12/\n" +
@@ -1000,16 +1426,41 @@ const file_proto_manager_proto_rawDesc = "" +
 	"\x04data\x18\x02 \x01(\v2\x1e.manager.v1.LyricsDataResponseR\x04data\"E\n" +
 	"\x12LyricsDataResponse\x12\x17\n" +
 	"\aadam_id\x18\x01 \x01(\tR\x06adamId\x12\x16\n" +
-	"\x06lyrics\x18\x02 \x01(\tR\x06lyrics\"=\n" +
+	"\x06lyrics\x18\x02 \x01(\tR\x06lyrics\"D\n" +
+	"\x0eLicenseRequest\x122\n" +
+	"\x04data\x18\x01 \x01(\v2\x1e.manager.v1.LicenseDataRequestR\x04data\"]\n" +
+	"\x12LicenseDataRequest\x12\x17\n" +
+	"\aadam_id\x18\x01 \x01(\tR\x06adamId\x12\x1c\n" +
+	"\tchallenge\x18\x02 \x01(\tR\tchallenge\x12\x10\n" +
+	"\x03uri\x18\x03 \x01(\tR\x03uri\"t\n" +
+	"\fLicenseReply\x12/\n" +
+	"\x06header\x18\x01 \x01(\v2\x17.manager.v1.ReplyHeaderR\x06header\x123\n" +
+	"\x04data\x18\x02 \x01(\v2\x1f.manager.v1.LicenseDataResponseR\x04data\"^\n" +
+	"\x13LicenseDataResponse\x12\x17\n" +
+	"\aadam_id\x18\x01 \x01(\tR\x06adamId\x12\x18\n" +
+	"\alicense\x18\x02 \x01(\tR\alicense\x12\x14\n" +
+	"\x05renew\x18\x03 \x01(\x03R\x05renew\"L\n" +
+	"\x12WebPlaybackRequest\x126\n" +
+	"\x04data\x18\x01 \x01(\v2\".manager.v1.WebPlaybackDataRequestR\x04data\"1\n" +
+	"\x16WebPlaybackDataRequest\x12\x17\n" +
+	"\aadam_id\x18\x01 \x01(\tR\x06adamId\"|\n" +
+	"\x10WebPlaybackReply\x12/\n" +
+	"\x06header\x18\x01 \x01(\v2\x17.manager.v1.ReplyHeaderR\x06header\x127\n" +
+	"\x04data\x18\x02 \x01(\v2#.manager.v1.WebPlaybackDataResponseR\x04data\"F\n" +
+	"\x17WebPlaybackDataResponse\x12\x17\n" +
+	"\aadam_id\x18\x01 \x01(\tR\x06adamId\x12\x12\n" +
+	"\x04m3u8\x18\x02 \x01(\tR\x04m3u8\"=\n" +
 	"\n" +
 	"ErrorReply\x12/\n" +
-	"\x06header\x18\x01 \x01(\v2\x17.manager.v1.ReplyHeaderR\x06header2\xcc\x02\n" +
+	"\x06header\x18\x01 \x01(\v2\x17.manager.v1.ReplyHeaderR\x06header2\xda\x03\n" +
 	"\x15WrapperManagerService\x129\n" +
 	"\x06Status\x12\x16.google.protobuf.Empty\x1a\x17.manager.v1.StatusReply\x12=\n" +
 	"\x05Login\x12\x18.manager.v1.LoginRequest\x1a\x16.manager.v1.LoginReply(\x010\x01\x12C\n" +
 	"\aDecrypt\x12\x1a.manager.v1.DecryptRequest\x1a\x18.manager.v1.DecryptReply(\x010\x01\x126\n" +
 	"\x04M3U8\x12\x17.manager.v1.M3U8Request\x1a\x15.manager.v1.M3U8Reply\x12<\n" +
-	"\x06Lyrics\x12\x19.manager.v1.LyricsRequest\x1a\x17.manager.v1.LyricsReplyB\x1dZ\x1bwrapper-manager/proto;protob\x06proto3"
+	"\x06Lyrics\x12\x19.manager.v1.LyricsRequest\x1a\x17.manager.v1.LyricsReply\x12?\n" +
+	"\aLicense\x12\x1a.manager.v1.LicenseRequest\x1a\x18.manager.v1.LicenseReply\x12K\n" +
+	"\vWebPlayback\x12\x1e.manager.v1.WebPlaybackRequest\x1a\x1c.manager.v1.WebPlaybackReplyB\x1dZ\x1bwrapper-manager/proto;protob\x06proto3"
 
 var (
 	file_proto_manager_proto_rawDescOnce sync.Once
@@ -1023,58 +1474,77 @@ func file_proto_manager_proto_rawDescGZIP() []byte {
 	return file_proto_manager_proto_rawDescData
 }
 
-var file_proto_manager_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_proto_manager_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_proto_manager_proto_goTypes = []any{
-	(*ReplyHeader)(nil),        // 0: manager.v1.ReplyHeader
-	(*StatusReply)(nil),        // 1: manager.v1.StatusReply
-	(*StatusData)(nil),         // 2: manager.v1.StatusData
-	(*LoginRequest)(nil),       // 3: manager.v1.LoginRequest
-	(*LoginData)(nil),          // 4: manager.v1.LoginData
-	(*LoginReply)(nil),         // 5: manager.v1.LoginReply
-	(*DecryptRequest)(nil),     // 6: manager.v1.DecryptRequest
-	(*DecryptReply)(nil),       // 7: manager.v1.DecryptReply
-	(*DecryptData)(nil),        // 8: manager.v1.DecryptData
-	(*M3U8Request)(nil),        // 9: manager.v1.M3U8Request
-	(*M3U8DataRequest)(nil),    // 10: manager.v1.M3U8DataRequest
-	(*M3U8Reply)(nil),          // 11: manager.v1.M3U8Reply
-	(*M3U8DataResponse)(nil),   // 12: manager.v1.M3U8DataResponse
-	(*LyricsRequest)(nil),      // 13: manager.v1.LyricsRequest
-	(*LyricsDataRequest)(nil),  // 14: manager.v1.LyricsDataRequest
-	(*LyricsReply)(nil),        // 15: manager.v1.LyricsReply
-	(*LyricsDataResponse)(nil), // 16: manager.v1.LyricsDataResponse
-	(*ErrorReply)(nil),         // 17: manager.v1.ErrorReply
-	(*emptypb.Empty)(nil),      // 18: google.protobuf.Empty
+	(*ReplyHeader)(nil),             // 0: manager.v1.ReplyHeader
+	(*StatusReply)(nil),             // 1: manager.v1.StatusReply
+	(*StatusData)(nil),              // 2: manager.v1.StatusData
+	(*LoginRequest)(nil),            // 3: manager.v1.LoginRequest
+	(*LoginData)(nil),               // 4: manager.v1.LoginData
+	(*LoginReply)(nil),              // 5: manager.v1.LoginReply
+	(*DecryptRequest)(nil),          // 6: manager.v1.DecryptRequest
+	(*DecryptReply)(nil),            // 7: manager.v1.DecryptReply
+	(*DecryptData)(nil),             // 8: manager.v1.DecryptData
+	(*M3U8Request)(nil),             // 9: manager.v1.M3U8Request
+	(*M3U8DataRequest)(nil),         // 10: manager.v1.M3U8DataRequest
+	(*M3U8Reply)(nil),               // 11: manager.v1.M3U8Reply
+	(*M3U8DataResponse)(nil),        // 12: manager.v1.M3U8DataResponse
+	(*LyricsRequest)(nil),           // 13: manager.v1.LyricsRequest
+	(*LyricsDataRequest)(nil),       // 14: manager.v1.LyricsDataRequest
+	(*LyricsReply)(nil),             // 15: manager.v1.LyricsReply
+	(*LyricsDataResponse)(nil),      // 16: manager.v1.LyricsDataResponse
+	(*LicenseRequest)(nil),          // 17: manager.v1.LicenseRequest
+	(*LicenseDataRequest)(nil),      // 18: manager.v1.LicenseDataRequest
+	(*LicenseReply)(nil),            // 19: manager.v1.LicenseReply
+	(*LicenseDataResponse)(nil),     // 20: manager.v1.LicenseDataResponse
+	(*WebPlaybackRequest)(nil),      // 21: manager.v1.WebPlaybackRequest
+	(*WebPlaybackDataRequest)(nil),  // 22: manager.v1.WebPlaybackDataRequest
+	(*WebPlaybackReply)(nil),        // 23: manager.v1.WebPlaybackReply
+	(*WebPlaybackDataResponse)(nil), // 24: manager.v1.WebPlaybackDataResponse
+	(*ErrorReply)(nil),              // 25: manager.v1.ErrorReply
+	(*emptypb.Empty)(nil),           // 26: google.protobuf.Empty
 }
 var file_proto_manager_proto_depIdxs = []int32{
 	0,  // 0: manager.v1.StatusReply.header:type_name -> manager.v1.ReplyHeader
 	2,  // 1: manager.v1.StatusReply.data:type_name -> manager.v1.StatusData
 	4,  // 2: manager.v1.LoginRequest.data:type_name -> manager.v1.LoginData
 	0,  // 3: manager.v1.LoginReply.header:type_name -> manager.v1.ReplyHeader
-	8,  // 4: manager.v1.DecryptRequest.data:type_name -> manager.v1.DecryptData
-	0,  // 5: manager.v1.DecryptReply.header:type_name -> manager.v1.ReplyHeader
-	8,  // 6: manager.v1.DecryptReply.data:type_name -> manager.v1.DecryptData
-	10, // 7: manager.v1.M3U8Request.data:type_name -> manager.v1.M3U8DataRequest
-	0,  // 8: manager.v1.M3U8Reply.header:type_name -> manager.v1.ReplyHeader
-	12, // 9: manager.v1.M3U8Reply.data:type_name -> manager.v1.M3U8DataResponse
-	14, // 10: manager.v1.LyricsRequest.data:type_name -> manager.v1.LyricsDataRequest
-	0,  // 11: manager.v1.LyricsReply.header:type_name -> manager.v1.ReplyHeader
-	16, // 12: manager.v1.LyricsReply.data:type_name -> manager.v1.LyricsDataResponse
-	0,  // 13: manager.v1.ErrorReply.header:type_name -> manager.v1.ReplyHeader
-	18, // 14: manager.v1.WrapperManagerService.Status:input_type -> google.protobuf.Empty
-	3,  // 15: manager.v1.WrapperManagerService.Login:input_type -> manager.v1.LoginRequest
-	6,  // 16: manager.v1.WrapperManagerService.Decrypt:input_type -> manager.v1.DecryptRequest
-	9,  // 17: manager.v1.WrapperManagerService.M3U8:input_type -> manager.v1.M3U8Request
-	13, // 18: manager.v1.WrapperManagerService.Lyrics:input_type -> manager.v1.LyricsRequest
-	1,  // 19: manager.v1.WrapperManagerService.Status:output_type -> manager.v1.StatusReply
-	5,  // 20: manager.v1.WrapperManagerService.Login:output_type -> manager.v1.LoginReply
-	7,  // 21: manager.v1.WrapperManagerService.Decrypt:output_type -> manager.v1.DecryptReply
-	11, // 22: manager.v1.WrapperManagerService.M3U8:output_type -> manager.v1.M3U8Reply
-	15, // 23: manager.v1.WrapperManagerService.Lyrics:output_type -> manager.v1.LyricsReply
-	19, // [19:24] is the sub-list for method output_type
-	14, // [14:19] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	4,  // 4: manager.v1.LoginReply.data:type_name -> manager.v1.LoginData
+	8,  // 5: manager.v1.DecryptRequest.data:type_name -> manager.v1.DecryptData
+	0,  // 6: manager.v1.DecryptReply.header:type_name -> manager.v1.ReplyHeader
+	8,  // 7: manager.v1.DecryptReply.data:type_name -> manager.v1.DecryptData
+	10, // 8: manager.v1.M3U8Request.data:type_name -> manager.v1.M3U8DataRequest
+	0,  // 9: manager.v1.M3U8Reply.header:type_name -> manager.v1.ReplyHeader
+	12, // 10: manager.v1.M3U8Reply.data:type_name -> manager.v1.M3U8DataResponse
+	14, // 11: manager.v1.LyricsRequest.data:type_name -> manager.v1.LyricsDataRequest
+	0,  // 12: manager.v1.LyricsReply.header:type_name -> manager.v1.ReplyHeader
+	16, // 13: manager.v1.LyricsReply.data:type_name -> manager.v1.LyricsDataResponse
+	18, // 14: manager.v1.LicenseRequest.data:type_name -> manager.v1.LicenseDataRequest
+	0,  // 15: manager.v1.LicenseReply.header:type_name -> manager.v1.ReplyHeader
+	20, // 16: manager.v1.LicenseReply.data:type_name -> manager.v1.LicenseDataResponse
+	22, // 17: manager.v1.WebPlaybackRequest.data:type_name -> manager.v1.WebPlaybackDataRequest
+	0,  // 18: manager.v1.WebPlaybackReply.header:type_name -> manager.v1.ReplyHeader
+	24, // 19: manager.v1.WebPlaybackReply.data:type_name -> manager.v1.WebPlaybackDataResponse
+	0,  // 20: manager.v1.ErrorReply.header:type_name -> manager.v1.ReplyHeader
+	26, // 21: manager.v1.WrapperManagerService.Status:input_type -> google.protobuf.Empty
+	3,  // 22: manager.v1.WrapperManagerService.Login:input_type -> manager.v1.LoginRequest
+	6,  // 23: manager.v1.WrapperManagerService.Decrypt:input_type -> manager.v1.DecryptRequest
+	9,  // 24: manager.v1.WrapperManagerService.M3U8:input_type -> manager.v1.M3U8Request
+	13, // 25: manager.v1.WrapperManagerService.Lyrics:input_type -> manager.v1.LyricsRequest
+	17, // 26: manager.v1.WrapperManagerService.License:input_type -> manager.v1.LicenseRequest
+	21, // 27: manager.v1.WrapperManagerService.WebPlayback:input_type -> manager.v1.WebPlaybackRequest
+	1,  // 28: manager.v1.WrapperManagerService.Status:output_type -> manager.v1.StatusReply
+	5,  // 29: manager.v1.WrapperManagerService.Login:output_type -> manager.v1.LoginReply
+	7,  // 30: manager.v1.WrapperManagerService.Decrypt:output_type -> manager.v1.DecryptReply
+	11, // 31: manager.v1.WrapperManagerService.M3U8:output_type -> manager.v1.M3U8Reply
+	15, // 32: manager.v1.WrapperManagerService.Lyrics:output_type -> manager.v1.LyricsReply
+	19, // 33: manager.v1.WrapperManagerService.License:output_type -> manager.v1.LicenseReply
+	23, // 34: manager.v1.WrapperManagerService.WebPlayback:output_type -> manager.v1.WebPlaybackReply
+	28, // [28:35] is the sub-list for method output_type
+	21, // [21:28] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_proto_manager_proto_init() }
@@ -1088,7 +1558,7 @@ func file_proto_manager_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_manager_proto_rawDesc), len(file_proto_manager_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   18,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
