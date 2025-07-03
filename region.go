@@ -7,7 +7,6 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
-	"regexp"
 	"sync"
 )
 
@@ -24,7 +23,7 @@ func checkSongAvailableOnRegion(adamId string, region string) bool {
 
 	val, _, _ := songRegionSingleFlight.Do(cacheKey, func() (interface{}, error) {
 		url := fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s", region, adamId)
-		token, err := getToken()
+		token, err := GetToken()
 		if err != nil {
 			return false, err
 		}
@@ -56,57 +55,6 @@ func checkSongAvailableOnRegion(adamId string, region string) bool {
 	})
 
 	return val.(bool)
-}
-func getToken() (string, error) {
-	req, err := http.NewRequest("GET", "https://beta.music.apple.com", nil)
-	if err != nil {
-		return "", err
-	}
-
-	resp, err := GetHttpClient().Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			panic(err)
-		}
-	}(resp.Body)
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	regex := regexp.MustCompile(`/assets/index-legacy-[^/]+\.js`)
-	indexJsUri := regex.FindString(string(body))
-
-	req, err = http.NewRequest("GET", "https://beta.music.apple.com"+indexJsUri, nil)
-	if err != nil {
-		return "", err
-	}
-
-	resp, err = GetHttpClient().Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			panic(err)
-		}
-	}(resp.Body)
-
-	body, err = io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	regex = regexp.MustCompile(`eyJh([^"]*)`)
-	token := regex.FindString(string(body))
-
-	return token, nil
 }
 
 func SelectInstance(adamId string) string {

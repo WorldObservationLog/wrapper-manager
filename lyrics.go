@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,39 +20,6 @@ func GetHttpClient() *http.Client {
 	}
 	transport := &http.Transport{Proxy: http.ProxyURL(proxyUrl)}
 	return &http.Client{Transport: transport}
-}
-
-func GetInstanceAuthToken(instance *WrapperInstance) (string, string, error) {
-	db, err := sql.Open("sqlite3", fmt.Sprintf("data/wrapper/rootfs/data/instances/%s/mpl_db/cookies.sqlitedb", instance.Id))
-	if err != nil {
-		return "", "", err
-	}
-	defer db.Close()
-	dsidQuery := "select value from cookies where name == \"X-Dsid\";"
-	result, err := db.Query(dsidQuery)
-	if err != nil {
-		return "", "", err
-	}
-	var dsid string
-	for result.Next() {
-		err = result.Scan(&dsid)
-		if err != nil {
-			return "", "", err
-		}
-	}
-	tokenQuery := fmt.Sprintf("select value from cookies where name == \"mz_at_ssl-%s\";", dsid)
-	result, err = db.Query(tokenQuery)
-	if err != nil {
-		return "", "", err
-	}
-	var token string
-	for result.Next() {
-		err = result.Scan(&token)
-		if err != nil {
-			return "", "", err
-		}
-	}
-	return dsid, token, nil
 }
 
 func GetLyrics(adamID string, region string, language string, dsid string, token string, accessToken string) (string, error) {
