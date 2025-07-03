@@ -15,14 +15,24 @@ var (
 	songRegionSingleFlight singleflight.Group
 )
 
-func checkSongAvailableOnRegion(adamId string, region string) bool {
-	cacheKey := fmt.Sprintf("%s/%s", region, adamId)
+func checkAvailableOnRegion(adamId string, region string, mv bool) bool {
+	var cacheKey string
+	if mv {
+		cacheKey = fmt.Sprintf("mv/%s/%s", region, adamId)
+	} else {
+		cacheKey = fmt.Sprintf("song/%s/%s", region, adamId)
+	}
 	if result, ok := SongRegionCache.Load(cacheKey); ok {
 		return result.(bool)
 	}
 
 	val, _, _ := songRegionSingleFlight.Do(cacheKey, func() (interface{}, error) {
-		url := fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s", region, adamId)
+		var url string
+		if mv {
+			url = fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s", region, adamId)
+		} else {
+			url = fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/music-videos/%s", region, adamId)
+		}
 		token, err := GetToken()
 		if err != nil {
 			return false, err
@@ -60,8 +70,15 @@ func checkSongAvailableOnRegion(adamId string, region string) bool {
 func SelectInstance(adamId string) string {
 	var selectedInstances []string
 	for _, instance := range Instances {
-		if checkSongAvailableOnRegion(adamId, instance.Region) {
+		if checkAvailableOnRegion(adamId, instance.Region, false) {
 			selectedInstances = append(selectedInstances, instance.Id)
+		}
+	}
+	if len(selectedInstances) == 0 {
+		for _, instance := range Instances {
+			if checkAvailableOnRegion(adamId, instance.Region, true) {
+				selectedInstances = append(selectedInstances, instance.Id)
+			}
 		}
 	}
 	if len(selectedInstances) != 0 {

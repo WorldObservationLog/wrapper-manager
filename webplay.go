@@ -34,6 +34,9 @@ func GetWebPlayback(adamId string, token string, musicToken string) (string, err
 	if err != nil {
 		return "", err
 	}
+	if playlist, ok := bodyJson["songList"].([]any)[0].(map[string]interface{})["hls-playlist-url"]; ok {
+		return playlist.(string), nil
+	}
 	assets := bodyJson["songList"].([]any)[0].(map[string]interface{})["assets"].([]any)
 	for _, asset := range assets {
 		if asset.(map[string]interface{})["flavor"].(string) == "28:ctrp256" {

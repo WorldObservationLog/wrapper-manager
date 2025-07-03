@@ -111,7 +111,7 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 		}
 		available := false
 		for _, inst := range Instances {
-			if checkSongAvailableOnRegion(req.Data.AdamId, inst.Region) {
+			if checkAvailableOnRegion(req.Data.AdamId, inst.Region, false) {
 				available = true
 				break
 			}

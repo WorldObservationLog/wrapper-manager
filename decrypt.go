@@ -170,7 +170,7 @@ func (s *Scheduler) trySchedule(groupKey TaskGroupKey) {
 
 	select {
 	case instance := <-s.instances:
-		if !checkSongAvailableOnRegion(groupKey.AdamId, instance.region) {
+		if !checkAvailableOnRegion(groupKey.AdamId, instance.region, false) {
 			go s.trySchedule(groupKey)
 			return
 		}
