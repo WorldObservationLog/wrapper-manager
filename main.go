@@ -9,6 +9,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/reflection"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"io"
 	"net"
@@ -449,5 +450,6 @@ func main() {
 	var opts []grpc.ServerOption
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterWrapperManagerServiceServer(grpcServer, newServer())
+	reflection.Register(grpcServer)
 	grpcServer.Serve(lis)
 }
