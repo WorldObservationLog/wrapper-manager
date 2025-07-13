@@ -415,7 +415,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if currentUser.Name != "root" {
+	if currentUser.Uid != "0" {
 		log.Panicln("root permission required")
 	}
 
