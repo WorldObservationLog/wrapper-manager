@@ -22,19 +22,15 @@ func GetHttpClient() *http.Client {
 	return &http.Client{Transport: transport}
 }
 
-func GetLyrics(adamID string, region string, language string, dsid string, token string, accessToken string) (string, error) {
+func GetLyrics(adamID string, region string, language string, token string, musicToken string) (string, error) {
 	req, err := http.NewRequest("GET", fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s/lyrics?l=%s", region, adamID, language), nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", "Music/5.7 Android/10 model/Pixel6GR1YH build/1234 (dt:66)")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("X-Dsid", dsid)
+	req.Header.Set("media-user-token", musicToken)
 	req.Header.Set("Origin", "https://music.apple.com")
-	req.AddCookie(&http.Cookie{
-		Name:  fmt.Sprintf("mz_at_ssl-%s", dsid),
-		Value: accessToken,
-	})
 	resp, err := GetHttpClient().Do(req)
 	if err != nil {
 		return "", err
