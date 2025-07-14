@@ -243,7 +243,7 @@ func (s *server) Lyrics(c context.Context, req *pb.LyricsRequest) (*pb.LyricsRep
 			},
 		}, nil
 	}
-	dsid, accessToken, err := GetInstanceAuthToken(GetInstance(selectedInstanceId))
+	musicToken, err := GetMusicToken(GetInstance(selectedInstanceId))
 	if err != nil {
 		return &pb.LyricsReply{
 			Header: &pb.ReplyHeader{
@@ -252,7 +252,7 @@ func (s *server) Lyrics(c context.Context, req *pb.LyricsRequest) (*pb.LyricsRep
 			},
 		}, nil
 	}
-	lyrics, err := GetLyrics(req.Data.AdamId, req.Data.Region, req.Data.Language, dsid, token, accessToken)
+	lyrics, err := GetLyrics(req.Data.AdamId, req.Data.Region, req.Data.Language, token, musicToken)
 	if err != nil {
 		return &pb.LyricsReply{
 			Header: &pb.ReplyHeader{
