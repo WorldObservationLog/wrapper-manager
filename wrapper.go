@@ -103,6 +103,18 @@ func WrapperInitial(account string, password string) {
 
 	go wrapperDown(instance)
 }
+func WrapperLogout(instance WrapperInstance) {
+	log.Info(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), " Wrapper Logout")
+	err := SchedulerInstance.RemoveInstance(instance.Id)
+	if err != nil {
+		return
+	}
+	RemoveInstance(instance)
+	err = os.RemoveAll("data/wrapper/rootfs/data/instances/"+instance.Id)
+	if err != nil {
+		panic(err)
+	}
+}
 
 func WrapperStart(id string) {
 	instance := WrapperInstance{
@@ -156,6 +168,9 @@ func handleOutput(reader io.Reader, instance WrapperInstance) {
 		if strings.Contains(line, "[!] login failed") {
 			go LoginFailedHandler(instance.Id)
 		}
+		// if strings.Contains(line, "[!] 您的订阅已失效的相关文本") {
+		// 	go WrapperLogout(instance)
+		// }
 	}
 }
 

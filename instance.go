@@ -56,6 +56,7 @@ func RemoveInstance(instance WrapperInstance) {
 	for i, existing := range Instances {
 		if existing.Id == instance.Id {
 			Instances = append(Instances[:i], Instances[i+1:]...)
+			SaveInstances()
 			return
 		}
 	}

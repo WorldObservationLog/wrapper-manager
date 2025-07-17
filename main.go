@@ -68,8 +68,9 @@ func (s *server) Login(stream grpc.BidiStreamingServer[pb.LoginRequest, pb.Login
 			return err
 		}
 		id := uuid.NewV5(uuid.FromStringOrNil("77777777-7777-7777-7777-77777777"), req.Data.Username).String()
+		doLogout := req.Data.Password == "logout"
 		for _, instance := range Instances {
-			if instance.Id == id {
+			if instance.Id == id && !doLogout {
 				err = stream.Send(&pb.LoginReply{
 					Header: &pb.ReplyHeader{
 						Code: -1,
@@ -79,7 +80,29 @@ func (s *server) Login(stream grpc.BidiStreamingServer[pb.LoginRequest, pb.Login
 				if err != nil {
 					return err
 				}
+			} else if instance.Id == id && doLogout {
+				WrapperLogout(*instance)
+				err = stream.Send(&pb.LoginReply{
+					Header: &pb.ReplyHeader{
+						Code: 0,
+						Msg:  "logged out",
+					},
+				})
+				if err != nil {
+					return err
+				} else {
+					return nil
+				}
 			}
+		}
+		if doLogout {
+			err = stream.Send(&pb.LoginReply{
+				Header: &pb.ReplyHeader{
+					Code: -1,
+					Msg:  "logout failed",
+				},
+			})
+			return err
 		}
 		if req.Data.TwoStepCode != 0 {
 			provide2FACode(id, strconv.Itoa(int(req.Data.TwoStepCode)))
