@@ -195,6 +195,13 @@ func provide2FACode(id string, code string) {
 	}
 }
 
+func RemoveWrapperData(id string) {
+	err := os.RemoveAll("data/wrapper/rootfs/data/instances/" + id)
+	if err != nil {
+		panic(err)
+	}
+}
+
 func DownloadWrapperRelease(mirror bool) {
 	resp, err := GetHttpClient().Get("https://api.github.com/repos/WorldObservationLog/wrapper/releases/latest")
 	if err != nil {

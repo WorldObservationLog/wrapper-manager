@@ -41,6 +41,7 @@ func LoginDoneHandler(id string) {
 }
 
 func LoginFailedHandler(id string) {
+	RemoveWrapperData(id)
 	conn, _ := LoginConnMap.LoadAndDelete(id)
 	if conn == nil {
 		return
