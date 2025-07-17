@@ -8,6 +8,7 @@ import "google/protobuf/empty.proto";
 service WrapperManagerService {
   rpc Status (google.protobuf.Empty) returns (StatusReply);
   rpc Login (stream LoginRequest) returns (stream LoginReply);
+  rpc Logout()
   rpc Decrypt (stream DecryptRequest) returns (stream DecryptReply);
   rpc M3U8 (M3U8Request) returns (M3U8Reply);
   rpc Lyrics (LyricsRequest) returns (LyricsReply);
