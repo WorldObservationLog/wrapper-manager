@@ -43,8 +43,7 @@ message LoginRequest {
 message LoginData {
   string username = 1;
   string password = 2;
-  int32 two_step_code = 3;
-  string period = 4;
+  string two_step_code = 3;
 }
 
 message LoginReply {

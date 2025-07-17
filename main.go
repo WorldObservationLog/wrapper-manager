@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/user"
 	"slices"
-	"strconv"
 	pb "wrapper-manager/proto"
 )
 
@@ -81,8 +80,8 @@ func (s *server) Login(stream grpc.BidiStreamingServer[pb.LoginRequest, pb.Login
 				}
 			}
 		}
-		if req.Data.TwoStepCode != 0 {
-			provide2FACode(id, strconv.Itoa(int(req.Data.TwoStepCode)))
+		if req.Data.TwoStepCode != "" {
+			provide2FACode(id, req.Data.TwoStepCode)
 		} else {
 			LoginConnMap.Store(id, stream)
 			go WrapperInitial(req.Data.Username, req.Data.Password)
