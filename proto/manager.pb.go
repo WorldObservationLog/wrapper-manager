@@ -235,8 +235,7 @@ type LoginData struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
 	Password      string                 `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
-	TwoStepCode   int32                  `protobuf:"varint,3,opt,name=two_step_code,json=twoStepCode,proto3" json:"two_step_code,omitempty"`
-	Period        string                 `protobuf:"bytes,4,opt,name=period,proto3" json:"period,omitempty"`
+	TwoStepCode   string                 `protobuf:"bytes,3,opt,name=two_step_code,json=twoStepCode,proto3" json:"two_step_code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -285,16 +284,9 @@ func (x *LoginData) GetPassword() string {
 	return ""
 }
 
-func (x *LoginData) GetTwoStepCode() int32 {
+func (x *LoginData) GetTwoStepCode() string {
 	if x != nil {
 		return x.TwoStepCode
-	}
-	return 0
-}
-
-func (x *LoginData) GetPeriod() string {
-	if x != nil {
-		return x.Period
 	}
 	return ""
 }
@@ -1385,12 +1377,11 @@ const file_proto_manager_proto_rawDesc = "" +
 	"\aregions\x18\x02 \x03(\tR\aregions\x12!\n" +
 	"\fclient_count\x18\x03 \x01(\x05R\vclientCount\"9\n" +
 	"\fLoginRequest\x12)\n" +
-	"\x04data\x18\x01 \x01(\v2\x15.manager.v1.LoginDataR\x04data\"\x7f\n" +
+	"\x04data\x18\x01 \x01(\v2\x15.manager.v1.LoginDataR\x04data\"g\n" +
 	"\tLoginData\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1a\n" +
 	"\bpassword\x18\x02 \x01(\tR\bpassword\x12\"\n" +
-	"\rtwo_step_code\x18\x03 \x01(\x05R\vtwoStepCode\x12\x16\n" +
-	"\x06period\x18\x04 \x01(\tR\x06period\"h\n" +
+	"\rtwo_step_code\x18\x03 \x01(\tR\vtwoStepCode\"h\n" +
 	"\n" +
 	"LoginReply\x12/\n" +
 	"\x06header\x18\x01 \x01(\v2\x17.manager.v1.ReplyHeaderR\x06header\x12)\n" +
