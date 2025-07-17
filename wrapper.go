@@ -156,6 +156,9 @@ func handleOutput(reader io.Reader, instance WrapperInstance) {
 		if strings.Contains(line, "[!] login failed") {
 			go LoginFailedHandler(instance.Id)
 		}
+		if strings.Contains(line, "No Active Subscription") {
+			go NoSubscriptionHandler(instance)
+		}
 	}
 }
 
@@ -182,7 +185,6 @@ func wrapperDown(instance WrapperInstance) {
 	if err != nil {
 		return
 	}
-	RemoveInstance(instance)
 	if !instance.DoLogin {
 		go WrapperStart(instance.Id)
 	}
@@ -240,5 +242,15 @@ func DownloadStorefrontIds() {
 	err = os.WriteFile("data/storefront_ids.json", ids, 0777)
 	if err != nil {
 		panic(err)
+	}
+}
+
+func NoSubscriptionHandler(instance WrapperInstance) {
+	if instance.DoLogin {
+		go LoginFailedHandler(instance.Id)
+	} else {
+		RemoveInstance(instance)
+		RemoveWrapperData(instance.Id)
+		SaveInstances()
 	}
 }

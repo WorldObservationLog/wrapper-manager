@@ -49,7 +49,6 @@ func InsertInstance(instance WrapperInstance) {
 		}
 	}
 	Instances = append(Instances, &instance)
-	SaveInstances()
 }
 
 func RemoveInstance(instance WrapperInstance) {

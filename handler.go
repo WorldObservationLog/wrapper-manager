@@ -24,6 +24,7 @@ func Login2FAHandler(id string) {
 }
 
 func LoginDoneHandler(id string) {
+	SaveInstances()
 	conn, _ := LoginConnMap.LoadAndDelete(id)
 	if conn == nil {
 		return
