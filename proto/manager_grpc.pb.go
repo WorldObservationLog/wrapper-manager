@@ -22,6 +22,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	WrapperManagerService_Status_FullMethodName      = "/manager.v1.WrapperManagerService/Status"
 	WrapperManagerService_Login_FullMethodName       = "/manager.v1.WrapperManagerService/Login"
+	WrapperManagerService_Logout_FullMethodName      = "/manager.v1.WrapperManagerService/Logout"
 	WrapperManagerService_Decrypt_FullMethodName     = "/manager.v1.WrapperManagerService/Decrypt"
 	WrapperManagerService_M3U8_FullMethodName        = "/manager.v1.WrapperManagerService/M3U8"
 	WrapperManagerService_Lyrics_FullMethodName      = "/manager.v1.WrapperManagerService/Lyrics"
@@ -35,6 +36,7 @@ const (
 type WrapperManagerServiceClient interface {
 	Status(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*StatusReply, error)
 	Login(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[LoginRequest, LoginReply], error)
+	Logout(ctx context.Context, in *LogoutRequest, opts ...grpc.CallOption) (*LogoutReply, error)
 	Decrypt(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[DecryptRequest, DecryptReply], error)
 	M3U8(ctx context.Context, in *M3U8Request, opts ...grpc.CallOption) (*M3U8Reply, error)
 	Lyrics(ctx context.Context, in *LyricsRequest, opts ...grpc.CallOption) (*LyricsReply, error)
@@ -72,6 +74,16 @@ func (c *wrapperManagerServiceClient) Login(ctx context.Context, opts ...grpc.Ca
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WrapperManagerService_LoginClient = grpc.BidiStreamingClient[LoginRequest, LoginReply]
+
+func (c *wrapperManagerServiceClient) Logout(ctx context.Context, in *LogoutRequest, opts ...grpc.CallOption) (*LogoutReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LogoutReply)
+	err := c.cc.Invoke(ctx, WrapperManagerService_Logout_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
 func (c *wrapperManagerServiceClient) Decrypt(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[DecryptRequest, DecryptReply], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -132,6 +144,7 @@ func (c *wrapperManagerServiceClient) WebPlayback(ctx context.Context, in *WebPl
 type WrapperManagerServiceServer interface {
 	Status(context.Context, *emptypb.Empty) (*StatusReply, error)
 	Login(grpc.BidiStreamingServer[LoginRequest, LoginReply]) error
+	Logout(context.Context, *LogoutRequest) (*LogoutReply, error)
 	Decrypt(grpc.BidiStreamingServer[DecryptRequest, DecryptReply]) error
 	M3U8(context.Context, *M3U8Request) (*M3U8Reply, error)
 	Lyrics(context.Context, *LyricsRequest) (*LyricsReply, error)
@@ -152,6 +165,9 @@ func (UnimplementedWrapperManagerServiceServer) Status(context.Context, *emptypb
 }
 func (UnimplementedWrapperManagerServiceServer) Login(grpc.BidiStreamingServer[LoginRequest, LoginReply]) error {
 	return status.Errorf(codes.Unimplemented, "method Login not implemented")
+}
+func (UnimplementedWrapperManagerServiceServer) Logout(context.Context, *LogoutRequest) (*LogoutReply, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Logout not implemented")
 }
 func (UnimplementedWrapperManagerServiceServer) Decrypt(grpc.BidiStreamingServer[DecryptRequest, DecryptReply]) error {
 	return status.Errorf(codes.Unimplemented, "method Decrypt not implemented")
@@ -213,6 +229,24 @@ func _WrapperManagerService_Login_Handler(srv interface{}, stream grpc.ServerStr
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WrapperManagerService_LoginServer = grpc.BidiStreamingServer[LoginRequest, LoginReply]
+
+func _WrapperManagerService_Logout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LogoutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WrapperManagerServiceServer).Logout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WrapperManagerService_Logout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WrapperManagerServiceServer).Logout(ctx, req.(*LogoutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
 
 func _WrapperManagerService_Decrypt_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(WrapperManagerServiceServer).Decrypt(&grpc.GenericServerStream[DecryptRequest, DecryptReply]{ServerStream: stream})
@@ -303,6 +337,10 @@ var WrapperManagerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Status",
 			Handler:    _WrapperManagerService_Status_Handler,
+		},
+		{
+			MethodName: "Logout",
+			Handler:    _WrapperManagerService_Logout_Handler,
 		},
 		{
 			MethodName: "M3U8",

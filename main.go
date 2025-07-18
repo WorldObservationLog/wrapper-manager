@@ -89,6 +89,46 @@ func (s *server) Login(stream grpc.BidiStreamingServer[pb.LoginRequest, pb.Login
 	}
 }
 
+func (s *server) Logout(c context.Context, req *pb.LogoutRequest) (*pb.LogoutReply, error) {
+	p, ok := peer.FromContext(c)
+	if ok {
+		log.Infof("logout request from %s", p.Addr.String())
+	} else {
+		log.Infof("logout request from unknown peer")
+	}
+	id := uuid.NewV5(uuid.FromStringOrNil("77777777-7777-7777-7777-77777777"), req.Data.Username).String()
+	instance := GetInstance(id)
+	if instance.Id == "" {
+		return &pb.LogoutReply{
+			Header: &pb.ReplyHeader{
+				Code: -1,
+				Msg:  "no such account",
+			},
+			Data: &pb.LogoutData{Username: req.Data.Username},
+		}, nil
+	}
+	instance.NoRestart = true
+	process := instance.Cmd.Process
+	err := process.Kill()
+	if err != nil {
+		return &pb.LogoutReply{
+			Header: &pb.ReplyHeader{
+				Code: -1,
+				Msg:  "failed to kill wrapper",
+			},
+			Data: &pb.LogoutData{Username: req.Data.Username},
+		}, nil
+	}
+	RemoveWrapperData(instance.Id)
+	return &pb.LogoutReply{
+		Header: &pb.ReplyHeader{
+			Code: 0,
+			Msg:  "SUCCESS",
+		},
+		Data: &pb.LogoutData{Username: req.Data.Username},
+	}, nil
+}
+
 func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.DecryptReply]) error {
 	p, ok := peer.FromContext(stream.Context())
 	if ok {

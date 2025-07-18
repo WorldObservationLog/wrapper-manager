@@ -69,7 +69,7 @@ func WrapperInitial(account string, password string) {
 		Id:          id.String(),
 		DecryptPort: GenerateUniquePort(),
 		M3U8Port:    GenerateUniquePort(),
-		DoLogin:     true,
+		NoRestart:   true,
 	}
 
 	args := []string{
@@ -94,14 +94,15 @@ func WrapperInitial(account string, password string) {
 	}
 	defer func() { _ = ptmx.Close() }()
 
-	go handleOutput(ptmx, instance)
+	instance.Cmd = cmd
+	go handleOutput(ptmx, &instance)
 
 	err = cmd.Wait()
 	if err != nil {
 		log.Warnf("Wrapper exited with error: %v\n", err)
 	}
 
-	go wrapperDown(instance)
+	go wrapperDown(&instance)
 }
 
 func WrapperStart(id string) {
@@ -109,7 +110,7 @@ func WrapperStart(id string) {
 		Id:          id,
 		DecryptPort: GenerateUniquePort(),
 		M3U8Port:    GenerateUniquePort(),
-		DoLogin:     false,
+		NoRestart:   false,
 	}
 
 	args := []string{
@@ -132,14 +133,15 @@ func WrapperStart(id string) {
 	}
 	defer func() { _ = ptmx.Close() }()
 
-	go handleOutput(ptmx, instance)
+	instance.Cmd = cmd
+	go handleOutput(ptmx, &instance)
 
 	_ = cmd.Wait()
 
-	go wrapperDown(instance)
+	go wrapperDown(&instance)
 }
 
-func handleOutput(reader io.Reader, instance WrapperInstance) {
+func handleOutput(reader io.Reader, instance *WrapperInstance) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -162,7 +164,7 @@ func handleOutput(reader io.Reader, instance WrapperInstance) {
 	}
 }
 
-func wrapperReady(instance WrapperInstance) {
+func wrapperReady(instance *WrapperInstance) {
 	storefrontID, err := os.ReadFile(fmt.Sprintf("data/wrapper/rootfs/data/instances/%s/STOREFRONT_ID", instance.Id))
 	if err != nil {
 		panic(err)
@@ -170,23 +172,26 @@ func wrapperReady(instance WrapperInstance) {
 	region := parseStorefrontID(string(storefrontID))
 	instance.Region = region
 	InsertInstance(instance)
-	err = SchedulerInstance.AddInstance(&instance)
+	err = SchedulerInstance.AddInstance(instance)
 	if err != nil {
 		return
 	}
-	instance.DoLogin = false
+	instance.NoRestart = false
 	go LoginDoneHandler(instance.Id)
 	log.Info(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), " Wrapper ready")
 }
 
-func wrapperDown(instance WrapperInstance) {
+func wrapperDown(instance *WrapperInstance) {
 	log.Info(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), " Wrapper Down")
+	RemoveInstance(instance)
 	err := SchedulerInstance.RemoveInstance(instance.Id)
 	if err != nil {
 		return
 	}
-	if !instance.DoLogin {
+	if !instance.NoRestart {
 		go WrapperStart(instance.Id)
+	} else {
+		SaveInstances()
 	}
 }
 
@@ -245,8 +250,8 @@ func DownloadStorefrontIds() {
 	}
 }
 
-func NoSubscriptionHandler(instance WrapperInstance) {
-	if instance.DoLogin {
+func NoSubscriptionHandler(instance *WrapperInstance) {
+	if instance.NoRestart {
 		go LoginFailedHandler(instance.Id)
 	} else {
 		RemoveInstance(instance)
