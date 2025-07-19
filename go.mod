@@ -9,6 +9,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/gofrs/uuid/v5 v5.3.2
 	github.com/sirupsen/logrus v1.9.3
+	github.com/soheilhy/cmux v0.1.5
 	golang.org/x/sync v0.16.0
 	google.golang.org/grpc v1.73.0
 	google.golang.org/protobuf v1.36.6
