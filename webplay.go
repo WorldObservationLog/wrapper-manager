@@ -45,6 +45,6 @@ func GetLicense(adamId string, challenge string, uri string, token string, music
 		return "", 0, err
 	}
 	license := respJson["license"].(string)
-	renew := respJson["renew-after"].(int)
+	renew := int(respJson["renew-after"].(float64))
 	return license, renew, nil
 }
