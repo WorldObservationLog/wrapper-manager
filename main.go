@@ -19,7 +19,10 @@ import (
 	pb "wrapper-manager/proto"
 )
 
-var PROXY string
+var (
+	PROXY string
+	DEBUG bool
+)
 
 type server struct {
 	pb.UnimplementedWrapperManagerServiceServer
@@ -450,6 +453,8 @@ func main() {
 	} else {
 		log.SetLevel(log.InfoLevel)
 	}
+
+	DEBUG = *debug
 
 	currentUser, err := user.Current()
 	if err != nil {
