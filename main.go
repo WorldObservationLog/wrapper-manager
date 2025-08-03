@@ -377,9 +377,9 @@ func (s *server) WebPlayback(c context.Context, req *pb.WebPlaybackRequest) (*pb
 func (s *server) License(c context.Context, req *pb.LicenseRequest) (*pb.LicenseReply, error) {
 	p, ok := peer.FromContext(c)
 	if ok {
-		log.Infof("webplayback request from %s", p.Addr.String())
+		log.Infof("license request from %s", p.Addr.String())
 	} else {
-		log.Infof("webplayback request from unknown peer")
+		log.Infof("license request from unknown peer")
 	}
 	instanceID := SelectInstance(req.Data.AdamId)
 	if instanceID == "" {
