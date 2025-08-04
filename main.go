@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/user"
 	"slices"
+	"strings"
 	pb "wrapper-manager/proto"
 )
 
@@ -258,12 +259,12 @@ func (s *server) Lyrics(c context.Context, req *pb.LyricsRequest) (*pb.LyricsRep
 	}
 	var selectedInstanceId string
 	for _, instance := range Instances {
-		if instance.Region == req.Data.Region {
+		if strings.ToUpper(instance.Region) == strings.ToUpper(req.Data.Region) {
 			selectedInstanceId = instance.Id
 		}
 	}
 	if selectedInstanceId == "" {
-		selectedInstanceId = SelectInstance(req.Data.AdamId)
+		selectedInstanceId = SelectInstanceForLyrics(req.Data.AdamId, req.Data.Language)
 		if selectedInstanceId == "" {
 			return &pb.LyricsReply{
 				Header: &pb.ReplyHeader{

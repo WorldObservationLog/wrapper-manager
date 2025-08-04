@@ -35,7 +35,7 @@ func GetLyrics(adamID string, region string, language string, token string, musi
 		return "", err
 	}
 	if resp.StatusCode != 200 {
-		return "", errors.New("no available lyrics")
+		return "", errors.New("failed to get lyrics")
 	}
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -47,4 +47,23 @@ func GetLyrics(adamID string, region string, language string, token string, musi
 	}
 	ttml := respJson["data"][0].(map[string]interface{})["attributes"].(map[string]interface{})["ttml"].(string)
 	return ttml, nil
+}
+
+func HasLyrics(adamID string, region string, language string, token string, musicToken string) bool {
+	req, err := http.NewRequest("HEAD", fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s/lyrics?l=%s", region, adamID, language), nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("User-Agent", "Music/5.7 Android/10 model/Pixel6GR1YH build/1234 (dt:66)")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	req.Header.Set("media-user-token", musicToken)
+	req.Header.Set("Origin", "https://music.apple.com")
+	resp, err := GetHttpClient().Do(req)
+	if err != nil {
+		return false
+	}
+	if resp.StatusCode != 200 {
+		return false
+	}
+	return true
 }

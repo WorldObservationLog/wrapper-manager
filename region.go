@@ -86,3 +86,24 @@ func SelectInstance(adamId string) string {
 	}
 	return ""
 }
+
+func SelectInstanceForLyrics(adamId string, language string) string {
+	token, err := GetToken()
+	if err != nil {
+		return ""
+	}
+	var selectedInstances []string
+	for _, instance := range Instances {
+		musicToken, err := GetMusicToken(instance)
+		if err != nil {
+			return ""
+		}
+		if HasLyrics(adamId, instance.Region, language, token, musicToken) {
+			selectedInstances = append(selectedInstances, instance.Id)
+		}
+	}
+	if len(selectedInstances) != 0 {
+		return selectedInstances[rand.Intn(len(selectedInstances))]
+	}
+	return ""
+}
