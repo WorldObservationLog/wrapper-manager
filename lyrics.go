@@ -1,41 +1,48 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
-	r "github.com/imroc/req/v3"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 )
 
-func GetHttpClient() *r.Client {
-	client := r.C()
-	if PROXY != "" {
-		client.SetProxyURL(PROXY)
+func GetHttpClient() *http.Client {
+	if PROXY == "" {
+		return http.DefaultClient
 	}
-	/*
-		if DEBUG {
-			client.DevMode()
-		}
-	*/
-	return client
+	proxyUrl, err := url.Parse(PROXY)
+	if err != nil {
+		panic("Invalid proxy URL: " + PROXY)
+	}
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyUrl)}
+	return &http.Client{Transport: transport}
 }
 
 func GetLyrics(adamID string, region string, language string, token string, musicToken string) (string, error) {
-	resp, err := GetHttpClient().R().
-		SetPathParam("region", region).
-		SetPathParam("adamid", adamID).
-		SetPathParam("language", language).
-		SetBearerAuthToken(token).
-		SetHeader("User-Agent", "Music/5.7 Android/10 model/Pixel6GR1YH build/1234 (dt:66)").
-		SetHeader("media-user-token", musicToken).
-		SetHeader("Origin", "https://music.apple.com").
-		Get("https://amp-api.music.apple.com/v1/catalog/{region}/songs/{adamid}/lyrics?l={language}")
+	req, err := http.NewRequest("GET", fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s/lyrics?l=%s", region, adamID, language), nil)
 	if err != nil {
 		return "", err
 	}
-	if resp.IsErrorState() {
+	req.Header.Set("User-Agent", "Music/5.7 Android/10 model/Pixel6GR1YH build/1234 (dt:66)")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	req.Header.Set("media-user-token", musicToken)
+	req.Header.Set("Origin", "https://music.apple.com")
+	resp, err := GetHttpClient().Do(req)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != 200 {
 		return "", errors.New("no available lyrics")
 	}
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
 	var respJson map[string][]interface{}
-	if err := resp.UnmarshalJson(&respJson); err != nil {
+	if err := json.Unmarshal(respBody, &respJson); err != nil {
 		return "", err
 	}
 	ttml := respJson["data"][0].(map[string]interface{})["attributes"].(map[string]interface{})["ttml"].(string)

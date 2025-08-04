@@ -2,13 +2,11 @@ package main
 
 import (
 	"fmt"
-	"github.com/hashicorp/golang-lru/v2/expirable"
+	"io"
+	"net/http"
 	"os"
 	"regexp"
-	"time"
 )
-
-var cache = expirable.NewLRU[string, string](1, nil, time.Hour*24)
 
 func GetMusicToken(instance *WrapperInstance) (string, error) {
 	token, err := os.ReadFile(fmt.Sprintf("data/wrapper/rootfs/data/instances/%s/MUSIC_TOKEN", instance.Id))
@@ -19,26 +17,53 @@ func GetMusicToken(instance *WrapperInstance) (string, error) {
 }
 
 func GetToken() (string, error) {
-	token, ok := cache.Get("token")
-	if ok {
-		return token, nil
+	req, err := http.NewRequest("GET", "https://beta.music.apple.com", nil)
+	if err != nil {
+		return "", err
 	}
-	resp, err := GetHttpClient().R().Get("https://beta.music.apple.com")
+
+	resp, err := GetHttpClient().Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			panic(err)
+		}
+	}(resp.Body)
+
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
 
 	regex := regexp.MustCompile(`/assets/index-legacy-[^/]+\.js`)
-	indexJsUri := regex.FindString(resp.String())
+	indexJsUri := regex.FindString(string(body))
 
-	resp, err = GetHttpClient().R().Get("https://beta.music.apple.com" + indexJsUri)
+	req, err = http.NewRequest("GET", "https://beta.music.apple.com"+indexJsUri, nil)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err = GetHttpClient().Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			panic(err)
+		}
+	}(resp.Body)
+
+	body, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
 
 	regex = regexp.MustCompile(`eyJh([^"]*)`)
-	token = regex.FindString(resp.String())
-	cache.Add("token", token)
+	token := regex.FindString(string(body))
 
 	return token, nil
 }
