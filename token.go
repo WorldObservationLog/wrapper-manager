@@ -2,11 +2,15 @@ package main
 
 import (
 	"fmt"
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"io"
 	"net/http"
 	"os"
 	"regexp"
+	"time"
 )
+
+var cache = expirable.NewLRU[string, string](1, nil, time.Hour*24)
 
 func GetMusicToken(instance *WrapperInstance) (string, error) {
 	token, err := os.ReadFile(fmt.Sprintf("data/wrapper/rootfs/data/instances/%s/MUSIC_TOKEN", instance.Id))
@@ -17,6 +21,9 @@ func GetMusicToken(instance *WrapperInstance) (string, error) {
 }
 
 func GetToken() (string, error) {
+	if token, ok := cache.Get("token"); ok {
+		return token, nil
+	}
 	req, err := http.NewRequest("GET", "https://beta.music.apple.com", nil)
 	if err != nil {
 		return "", err
@@ -64,6 +71,8 @@ func GetToken() (string, error) {
 
 	regex = regexp.MustCompile(`eyJh([^"]*)`)
 	token := regex.FindString(string(body))
+
+	cache.Add("token", token)
 
 	return token, nil
 }
