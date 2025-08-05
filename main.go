@@ -18,6 +18,8 @@ import (
 	"slices"
 	"strings"
 	pb "wrapper-manager/proto"
+	"github.com/soheilhy/cmux"
+	"net/http"
 )
 
 var PROXY string
@@ -488,9 +490,33 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
+	//基于该 listener 创建一个 cmux 实例
+	m := cmux.New(lis)
+
+	// gRPC 的 listener，通过 HTTP/2 的 Header 来匹配
+	grpcL := m.MatchWithWriters(cmux.HTTP2MatchHeaderFieldSendSettings("content-type", "application/grpc"))
+
+	// HTTP 的 listener，匹配所有其他连接
+	httpL := m.Match(cmux.Any())
+	//创建grpc
 	var opts []grpc.ServerOption
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterWrapperManagerServiceServer(grpcServer, newServer())
 	reflection.Register(grpcServer)
-	grpcServer.Serve(lis)
+	// 创建 HTTP 的 Mux
+	httpMux := http.NewServeMux()
+	httpMux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		// http.ServeFile 会处理 Content-Type 和错误
+		http.ServeFile(w, r, "data/instances.json")
+	})
+	httpS := &http.Server{
+		Handler: httpMux,
+	}
+	//启动各个服务器
+	go grpcServer.Serve(grpcL)
+	go httpS.Serve(httpL)
+	// 启动 cmux，它会阻塞并开始处理连接
+	if err := m.Serve(); err != nil {
+		log.Fatalf("cmux server failed: %v", err)
+	}
 }

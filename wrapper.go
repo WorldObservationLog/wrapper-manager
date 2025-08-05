@@ -223,7 +223,10 @@ func DownloadWrapperRelease(mirror bool) {
 	if err != nil {
 		panic(err)
 	}
-	downloadUrl := info.Assets[0]["browser_download_url"]
+	var downloadUrl interface{}
+	if len(info.Assets) != 0 {
+		downloadUrl = info.Assets[0]["browser_download_url"]
+	}
 	if mirror {
 		downloadUrl = strings.Replace(downloadUrl.(string), "github.com", "gh-proxy.com/github.com", -1)
 	}
