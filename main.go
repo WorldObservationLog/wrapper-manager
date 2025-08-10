@@ -145,6 +145,18 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 		if err != nil {
 			return err
 		}
+		if req.Data.AdamId == "KEEPALIVE" {
+			_ = stream.Send(&pb.DecryptReply{
+				Header: &pb.ReplyHeader{
+					Code: 0,
+					Msg:  "SUCCESS",
+				},
+				Data: &pb.DecryptData{
+					AdamId: "KEEPALIVE",
+				},
+			})
+			continue
+		}
 		task := Task{
 			AdamId:  req.Data.AdamId,
 			Key:     req.Data.Key,
