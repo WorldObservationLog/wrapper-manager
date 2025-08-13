@@ -304,7 +304,8 @@ func (s *server) Lyrics(c context.Context, req *pb.LyricsRequest) (*pb.LyricsRep
 			},
 		}, nil
 	}
-	lyrics, err := GetLyrics(req.Data.AdamId, req.Data.Region, req.Data.Language, token, musicToken)
+	inst := GetInstance(selectedInstanceId)
+	lyrics, err := GetLyrics(req.Data.AdamId, inst.Region, req.Data.Language, token, musicToken)
 	if err != nil {
 		return &pb.LyricsReply{
 			Header: &pb.ReplyHeader{
