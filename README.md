@@ -1,7 +1,7 @@
 # wrapper-manager
 A tool for managing multiple Wrapper instances
 
-Only supports linux x86_64 arch
+Support linux x86_64 and arm64 arch
 
 ## Features
 - Multi-instance management

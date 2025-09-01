@@ -9,8 +9,10 @@ import (
 	"github.com/gofrs/uuid/v5"
 	log "github.com/sirupsen/logrus"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -43,11 +45,17 @@ func parseStorefrontID(id string) string {
 }
 
 func PrepareWrapper(mirror bool) {
+	var wrapperZipPath string
+	if runtime.GOARCH == "amd64" {
+		wrapperZipPath = "data/wrapper-x86_64.zip"
+	} else if runtime.GOARCH == "arm64" {
+		wrapperZipPath = "data/wrapper-arm64.zip"
+	}
 	if _, err := os.Stat("data/wrapper/wrapper"); os.IsNotExist(err) {
-		if _, err := os.Stat("data/wrapper-x86_64.zip"); os.IsNotExist(err) {
+		if _, err := os.Stat(wrapperZipPath); os.IsNotExist(err) {
 			DownloadWrapperRelease(mirror)
 		}
-		err = unzip.New("data/wrapper-x86_64.zip", "data/wrapper").Extract()
+		err = unzip.New(wrapperZipPath, "data/wrapper").Extract()
 		if err != nil {
 			panic(err)
 		}
@@ -145,7 +153,7 @@ func handleOutput(reader io.Reader, instance *WrapperInstance) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "__") {
+		if !strings.HasPrefix(line, "__") || !strings.HasPrefix(line, "WARNING") {
 			log.Debug(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), line)
 		}
 
@@ -210,12 +218,24 @@ func RemoveWrapperData(id string) {
 }
 
 func DownloadWrapperRelease(mirror bool) {
-	resp, err := GetHttpClient().Get("https://api.github.com/repos/WorldObservationLog/wrapper/releases/latest")
-	if err != nil {
-		panic(err)
+	var resp *http.Response
+	if runtime.GOARCH == "amd64" {
+		var err error
+		resp, err = GetHttpClient().Get("https://api.github.com/repos/WorldObservationLog/wrapper/releases/latest")
+		if err != nil {
+			panic(err)
+		}
+	} else if runtime.GOARCH == "arm64" {
+		var err error
+		resp, err = GetHttpClient().Get("https://api.github.com/repos/WorldObservationLog/wrapper/releases/tags/Wrapper.arm64.latest")
+		if err != nil {
+			panic(err)
+		}
+	} else {
+		panic("unsupported arch")
 	}
 	buf := new(strings.Builder)
-	_, err = io.Copy(buf, resp.Body)
+	_, err := io.Copy(buf, resp.Body)
 	var info struct {
 		Assets []map[string]interface{} `json:"assets"`
 	}
@@ -232,7 +252,14 @@ func DownloadWrapperRelease(mirror bool) {
 		panic(err)
 	}
 	binary, err := io.ReadAll(wrapperResp.Body)
-	err = os.WriteFile("data/wrapper-x86_64.zip", binary, 0777)
+	if runtime.GOARCH == "amd64" {
+		err = os.WriteFile("data/wrapper-x86_64.zip", binary, 0777)
+	} else if runtime.GOARCH == "arm64" {
+		err = os.WriteFile("data/wrapper-arm64.zip", binary, 0777)
+	} else {
+		panic("unsupported arch")
+	}
+
 	if err != nil {
 		panic(err)
 	}
