@@ -1,4 +1,4 @@
-name: Go
+name: wrapper-manager-image-build
 
 on:
   push:
@@ -36,7 +36,7 @@ jobs:
       run: |
         sudo mkdir /mnt/wrapper-manager/root/wrapper-manager
         sudo mv wrapper-manager /mnt/wrapper-manager/root/wrapper-manager
-        sudo -D /mnt/wrapper-manager/root/wrapper-manager /mnt/wrapper-manager/root/wrapper-manager/wrapper-manager -prepare
+        sudo bash -c 'cd /mnt/wrapper-manager/root/wrapper-manager && ./wrapper-manager -prepare'
 
     - name: Unmount image
       run: |
