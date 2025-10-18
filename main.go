@@ -455,6 +455,7 @@ func main() {
 	var port = flag.Int("port", 8080, "port of gRPC server")
 	var mirror = flag.Bool("mirror", false, "use mirror to download wrapper and file (for Chinese users)")
 	var debug = flag.Bool("debug", false, "enable debug output")
+	var prepare = flag.Bool("prepare", false, "only download required files")
 	flag.StringVar(&PROXY, "proxy", "", "proxy for wrapper and manager")
 	flag.Parse()
 
@@ -485,6 +486,10 @@ func main() {
 	if _, err := os.Stat("data/storefront_ids.json"); errors.Is(err, os.ErrNotExist) {
 		log.Warn("storefront ids file dose not exist, downloading...")
 		DownloadStorefrontIds()
+	}
+
+	if *prepare {
+		os.Exit(0)
 	}
 
 	SchedulerInstance = NewScheduler(3)
