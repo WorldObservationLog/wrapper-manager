@@ -1,0 +1,50 @@
+name: Go
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.20'
+
+    - name: Build
+      run: go build .
+
+    - name:  Download wrapper-manager basic image
+      run: wget https://github.com/WorldObservationLog/wrapper-manager/releases/download/wrapper-manager-image/wrapper-manager.qcow2
+
+    - name: Mount image
+      run: |
+        sudo apt-get install -y qemu-utils
+        sudo modprobe nbd max_part=8
+        sudo qemu-nbd --connect=/dev/nbd0 wrapper-manager.qcow2
+        sudo mkdir /mnt/wrapper-manager
+        sudo mount /dev/nbd0p3 /mnt/wrapper-manager/
+
+    - name: Prepare wrapper-manager
+      run: |
+        sudo mkdir /mnt/wrapper-manager/root/wrapper-manager
+        sudo mv wrapper-manager /mnt/wrapper-manager/root/wrapper-manager
+        sudo -D /mnt/wrapper-manager/root/wrapper-manager /mnt/wrapper-manager/root/wrapper-manager/wrapper-manager -prepare
+
+    - name: Unmount image
+      run: |
+        sudo umount /mnt/wrapper/
+        sudo qemu-nbd --disconnect /dev/nbd0
+      
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: wrapper-manager-image
+        path: wrapper-manager.qcow2
