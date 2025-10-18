@@ -40,7 +40,7 @@ jobs:
 
     - name: Unmount image
       run: |
-        sudo umount /mnt/wrapper/
+        sudo umount /mnt/wrapper-manager/
         sudo qemu-nbd --disconnect /dev/nbd0
       
     - name: Upload artifact
