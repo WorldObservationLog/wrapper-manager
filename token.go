@@ -24,7 +24,7 @@ func GetToken() (string, error) {
 	if token, ok := cache.Get("token"); ok {
 		return token, nil
 	}
-	req, err := http.NewRequest("GET", "https://beta.music.apple.com", nil)
+	req, err := http.NewRequest("GET", "https://music.apple.com", nil)
 	if err != nil {
 		return "", err
 	}
@@ -45,10 +45,10 @@ func GetToken() (string, error) {
 		return "", err
 	}
 
-	regex := regexp.MustCompile(`/assets/index-legacy-[^/]+\.js`)
+	regex := regexp.MustCompile(`/assets/index~[^/]+\.js`)
 	indexJsUri := regex.FindString(string(body))
 
-	req, err = http.NewRequest("GET", "https://beta.music.apple.com"+indexJsUri, nil)
+	req, err = http.NewRequest("GET", "https://music.apple.com"+indexJsUri, nil)
 	if err != nil {
 		return "", err
 	}
