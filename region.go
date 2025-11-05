@@ -59,6 +59,10 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) bool {
 			return false, err
 		}
 
+		if respJson["errors"] != nil {
+			return false, nil
+		}
+
 		available := respJson["data"] != nil
 		SongRegionCache.Store(cacheKey, available)
 		return available, nil

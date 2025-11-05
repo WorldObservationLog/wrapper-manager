@@ -45,6 +45,9 @@ func GetLyrics(adamID string, region string, language string, token string, musi
 	if err := json.Unmarshal(respBody, &respJson); err != nil {
 		return "", err
 	}
+	if respJson["errors"] != nil {
+		return "", errors.New("failed to get lyrics")
+	}
 	ttml := respJson["data"][0].(map[string]interface{})["attributes"].(map[string]interface{})["ttml"].(string)
 	return ttml, nil
 }

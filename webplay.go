@@ -34,6 +34,9 @@ func GetWebPlayback(adamId string, token string, musicToken string) (string, err
 	if err != nil {
 		return "", err
 	}
+	if bodyJson["errors"] != nil {
+		return "", errors.New("failed to get asset")
+	}
 	if playlist, ok := bodyJson["songList"].([]any)[0].(map[string]interface{})["hls-playlist-url"]; ok {
 		return playlist.(string), nil
 	}
@@ -70,6 +73,9 @@ func GetLicense(adamId string, challenge string, uri string, token string, music
 	err = json.Unmarshal(respBody, &respJson)
 	if err != nil {
 		return "", 0, err
+	}
+	if respJson["errors"] != nil {
+		return "", 0, errors.New("failed to get license")
 	}
 	license := respJson["license"].(string)
 	renew := int(respJson["renew-after"].(float64))
