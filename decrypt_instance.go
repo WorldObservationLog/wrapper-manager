@@ -8,6 +8,11 @@ import (
 	"sync/atomic"
 )
 
+const (
+	defaultId   = "0"
+	prefetchKey = "skd://itunes.apple.com/P000000000/s1/e1"
+)
+
 type DecryptInstance struct {
 	id         string
 	region     string
@@ -55,15 +60,26 @@ func (d *DecryptInstance) switchContext(groupKey TaskGroupKey) error {
 			return err
 		}
 	}
-	_, err := d.conn.Write([]byte{byte(len(groupKey.AdamId))})
-	if err != nil {
-		return err
+	if groupKey.Key == prefetchKey {
+		_, err := d.conn.Write([]byte{byte(len(defaultId))})
+		if err != nil {
+			return err
+		}
+		_, err = io.WriteString(d.conn, defaultId)
+		if err != nil {
+			return err
+		}
+	} else {
+		_, err := d.conn.Write([]byte{byte(len(groupKey.AdamId))})
+		if err != nil {
+			return err
+		}
+		_, err = io.WriteString(d.conn, groupKey.AdamId)
+		if err != nil {
+			return err
+		}
 	}
-	_, err = io.WriteString(d.conn, groupKey.AdamId)
-	if err != nil {
-		return err
-	}
-	_, err = d.conn.Write([]byte{byte(len(groupKey.Key))})
+	_, err := d.conn.Write([]byte{byte(len(groupKey.Key))})
 	if err != nil {
 		return err
 	}
