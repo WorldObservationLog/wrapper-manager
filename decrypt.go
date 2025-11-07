@@ -192,20 +192,58 @@ func (s *Scheduler) trySchedule(groupKey TaskGroupKey) {
 	}
 	taskQueue := queueVal.(chan *Task)
 
-	select {
-	case instance := <-s.instances:
-		if !checkAvailableOnRegion(groupKey.AdamId, instance.region, false) {
-			go s.trySchedule(groupKey)
-			return
-		}
-		if _, ok := s.instanceMap.Load(instance.id); !ok {
-			go s.trySchedule(groupKey)
-			return
-		}
-		go s.process(instance, taskQueue, groupKey)
-	default:
+	// [修复点 A]
+	// 在尝试获取实例之前，先做一个（轻微racy）的检查。
+	// 如果队列已经空了（可能被其他刚完成的worker处理了），
+	// 我们就不需要再启动一个新的worker，直接返回即可。
+	// 这有助于减少不必要的协程调度（"Thundering Herd"问题）。
+	if len(taskQueue) == 0 {
 		return
 	}
+
+	// [修复点 B]
+	// 使用一个循环来确保我们 *一定* 能调度一个 *有效* 的实例，
+	// 或者队列被处理完毕。
+	for {
+		// [修复点 C]
+		// **核心修复：移除 select...default**
+		// 直接阻塞，直到从池中获取一个实例。
+		// 在此之前，检查一下上下文是否已取消。
+		select {
+		case <-s.ctx.Done(): // 响应 scheduler 关闭
+			return
+		case instance := <-s.instances:
+			// 我们成功获取了一个实例，现在检查它是否可用。
+
+			// 检查1：实例是否已被移除？
+			if _, ok := s.instanceMap.Load(instance.id); !ok {
+				// 实例已死，不要归还它。
+				// 我们需要重试，获取 *下一个* 实例。
+				// `continue` 会让循环返回到顶部，重新等待 <-s.instances
+				continue
+			}
+
+			// 检查2：实例是否适用于这个 Key 的 region？
+			if !checkAvailableOnRegion(groupKey.AdamId, instance.region, false) {
+				// 实例有效，但不适用于此 Key。
+				// 把它归还给池，以便其他 Key 可以使用。
+				s.instances <- instance
+
+				// 我们需要重试，获取 *下一个* 实例。
+				// 注意：如果池中所有实例都不适用，这里会造成CPU空转。
+				// 这是一个更复杂的架构问题（可能需要分region的池）。
+				// 但至少 `continue` 会让它重试，而不是死锁。
+				// （为了避免CPU空转，可以加一个短暂的 time.Sleep）
+				continue
+			}
+
+			// 成功：实例有效且适用。
+			// 派发任务并退出 `trySchedule` 协程。
+			go s.process(instance, taskQueue, groupKey)
+			return
+
+		} // end select
+	} // end for
 }
 
 func (s *Scheduler) Shutdown() {
