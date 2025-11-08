@@ -94,17 +94,18 @@ func (s *Scheduler) getCounter(groupKey TaskGroupKey) *AtomicCounter {
 func (s *Scheduler) Submit(task *Task) {
 	groupKey := TaskGroupKey{AdamId: task.AdamId, Key: task.Key}
 	taskQueue, _ := s.getTaskQueue(groupKey)
-	counter := s.getCounter(groupKey) // 获取计数器
+	counter := s.getCounter(groupKey) // 获取无锁计数器
 
 	// 1. 总是先把任务放入队列
 	taskQueue <- task
 
 	// 2. *** 核心性能修复 ***
-	// 仅当此 groupKey 当前没有活跃的 worker 时，才启动调度协程。
-	// 如果 counter.Get() > 0，说明已有一个或多个 'process' 协程在运行，
-	// 它们退出时的 'defer' 语句 *保证* 会调用 'trySchedule' 来处理我们刚放入的任务。
-	// 这可以防止为 1000 个任务启动 1000 个 'trySchedule' 协程。
-	if counter.Get() == 0 {
+	// 只要当前活跃的 worker 数 *小于* 最大并发数，
+	// 我们就尝试启动一个新的 'trySchedule' 协程来“扩大” worker 规模。
+	// 'trySchedule' 内部的 'IncIfLess' 会原子地处理“竞态”，确保 worker 总数不会超过上限。
+	// 一旦 counter 达到 maxConcurrent, 'Submit' 将停止创建新的 goroutine，
+	// 完全依赖 'process' 协程的 'defer' 链来维持运行。
+	if counter.Get() < s.maxConcurrent {
 		go s.trySchedule(groupKey)
 	}
 }
