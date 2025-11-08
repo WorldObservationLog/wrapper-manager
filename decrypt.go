@@ -94,11 +94,19 @@ func (s *Scheduler) getCounter(groupKey TaskGroupKey) *AtomicCounter {
 func (s *Scheduler) Submit(task *Task) {
 	groupKey := TaskGroupKey{AdamId: task.AdamId, Key: task.Key}
 	taskQueue, _ := s.getTaskQueue(groupKey)
+	counter := s.getCounter(groupKey) // 获取计数器
 
+	// 1. 总是先把任务放入队列
 	taskQueue <- task
-	// 每次提交都尝试触发一次调度
-	// trySchedule 内部有逻辑防止过多的协程
-	go s.trySchedule(groupKey)
+
+	// 2. *** 核心性能修复 ***
+	// 仅当此 groupKey 当前没有活跃的 worker 时，才启动调度协程。
+	// 如果 counter.Get() > 0，说明已有一个或多个 'process' 协程在运行，
+	// 它们退出时的 'defer' 语句 *保证* 会调用 'trySchedule' 来处理我们刚放入的任务。
+	// 这可以防止为 1000 个任务启动 1000 个 'trySchedule' 协程。
+	if counter.Get() == 0 {
+		go s.trySchedule(groupKey)
+	}
 }
 
 // process 是实际的工作协程
