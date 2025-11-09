@@ -211,38 +211,19 @@ func (s *Scheduler) trySchedule(groupKey TaskGroupKey) {
 
 	// 3. 阻塞循环，直到获取一个 *有效* 且 *适用* 的实例
 	for {
-		select {
-		case <-s.ctx.Done(): // 响应 scheduler 关闭
-			counter.Dec() // 归还名额，因为我们没有启动 process
-			return
-		case instance := <-s.instances:
-			// 成功从池中获取一个实例
-
-			// 检查1：实例是否已被移除？
-			if _, ok := s.instanceMap.Load(instance.id); !ok {
-				// 实例已死 (可能在 RemoveInstance 中被关闭)
-				// 丢弃此实例，循环重试，获取 *下一个* 实例
-				continue
-			}
-
-			// 检查2：实例是否适用于这个 Key 的 region？
-			// (假设 checkAvailableOnRegion 函数存在于别处)
-			if !checkAvailableOnRegion(groupKey.AdamId, instance.region, false) {
-				// 实例有效，但不适用。
-				// 把它归还给池，以便其他 Key 可以使用。
-				s.instances <- instance
-				// 循环重试，获取 *下一个* 实例
-				// 注意: 如果所有实例都不适用，这里可能会轻微空转
-				// 但不会死锁，因为新实例可以随时加入
-				continue
-			}
-
-			// 成功：实例有效且适用
-			// 派发任务并退出 `trySchedule` 协程
-			go s.process(instance, taskQueue, groupKey, counter)
-			return
-
-		} // end select
+	    select {
+	    case <-s.ctx.Done():
+	        counter.Dec()
+	        return
+	    case instance := <-s.instances:
+	        // 检查实例有效性...
+	        go s.process(instance, taskQueue, groupKey, counter)
+	        return
+	    default:
+	        // 没有可用实例，归还名额
+	        counter.Dec()
+	        return
+	    }
 	} // end for
 }
 
