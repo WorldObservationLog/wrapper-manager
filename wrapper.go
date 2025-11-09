@@ -86,6 +86,7 @@ func WrapperInitial(account string, password string) {
 		fmt.Sprintf("-B%s", "/data/instances/"+instance.Id),
 		fmt.Sprintf("-D%d", instance.DecryptPort),
 		fmt.Sprintf("-M%d", instance.M3U8Port),
+		fmt.Sprintf("-I%s", DeviceInfo),
 		"-F",
 	}
 
@@ -126,6 +127,7 @@ func WrapperStart(id string) {
 		fmt.Sprintf("-B%s", "/data/instances/"+id),
 		fmt.Sprintf("-D%d", instance.DecryptPort),
 		fmt.Sprintf("-M%d", instance.M3U8Port),
+		fmt.Sprintf("-I%s", DeviceInfo),
 	}
 
 	if PROXY != "" {

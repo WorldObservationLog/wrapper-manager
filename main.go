@@ -20,7 +20,10 @@ import (
 	pb "wrapper-manager/proto"
 )
 
-var PROXY string
+var (
+	PROXY      string
+	DeviceInfo string
+)
 
 type server struct {
 	pb.UnimplementedWrapperManagerServiceServer
@@ -457,6 +460,7 @@ func main() {
 	var debug = flag.Bool("debug", false, "enable debug output")
 	var prepare = flag.Bool("prepare", false, "only download required files")
 	flag.StringVar(&PROXY, "proxy", "", "proxy for wrapper and manager")
+	flag.StringVar(&DeviceInfo, "device-info", "Music/5.0.2/Android/10/Pixel 10/7663314/en-US/en-US/dc28071e371c439e", "device info for wrapper")
 	flag.Parse()
 
 	log.SetOutput(os.Stdout)
