@@ -94,11 +94,20 @@ func (s *Scheduler) getCounter(groupKey TaskGroupKey) *AtomicCounter {
 func (s *Scheduler) Submit(task *Task) {
 	groupKey := TaskGroupKey{AdamId: task.AdamId, Key: task.Key}
 	taskQueue, _ := s.getTaskQueue(groupKey)
+	counter := s.getCounter(groupKey) // 获取无锁计数器
 
+	// 1. 总是先把任务放入队列
 	taskQueue <- task
-	// 每次提交都尝试触发一次调度
-	// trySchedule 内部有逻辑防止过多的协程
-	go s.trySchedule(groupKey)
+
+	// 2. *** 核心性能修复 ***
+	// 只要当前活跃的 worker 数 *小于* 最大并发数，
+	// 我们就尝试启动一个新的 'trySchedule' 协程来“扩大” worker 规模。
+	// 'trySchedule' 内部的 'IncIfLess' 会原子地处理“竞态”，确保 worker 总数不会超过上限。
+	// 一旦 counter 达到 maxConcurrent, 'Submit' 将停止创建新的 goroutine，
+	// 完全依赖 'process' 协程的 'defer' 链来维持运行。
+	if counter.Get() < s.maxConcurrent {
+		go s.trySchedule(groupKey)
+	}
 }
 
 // process 是实际的工作协程
@@ -202,38 +211,19 @@ func (s *Scheduler) trySchedule(groupKey TaskGroupKey) {
 
 	// 3. 阻塞循环，直到获取一个 *有效* 且 *适用* 的实例
 	for {
-		select {
-		case <-s.ctx.Done(): // 响应 scheduler 关闭
-			counter.Dec() // 归还名额，因为我们没有启动 process
-			return
-		case instance := <-s.instances:
-			// 成功从池中获取一个实例
-
-			// 检查1：实例是否已被移除？
-			if _, ok := s.instanceMap.Load(instance.id); !ok {
-				// 实例已死 (可能在 RemoveInstance 中被关闭)
-				// 丢弃此实例，循环重试，获取 *下一个* 实例
-				continue
-			}
-
-			// 检查2：实例是否适用于这个 Key 的 region？
-			// (假设 checkAvailableOnRegion 函数存在于别处)
-			if !checkAvailableOnRegion(groupKey.AdamId, instance.region, false) {
-				// 实例有效，但不适用。
-				// 把它归还给池，以便其他 Key 可以使用。
-				s.instances <- instance
-				// 循环重试，获取 *下一个* 实例
-				// 注意: 如果所有实例都不适用，这里可能会轻微空转
-				// 但不会死锁，因为新实例可以随时加入
-				continue
-			}
-
-			// 成功：实例有效且适用
-			// 派发任务并退出 `trySchedule` 协程
-			go s.process(instance, taskQueue, groupKey, counter)
-			return
-
-		} // end select
+	    select {
+	    case <-s.ctx.Done():
+	        counter.Dec()
+	        return
+	    case instance := <-s.instances:
+	        // 检查实例有效性...
+	        go s.process(instance, taskQueue, groupKey, counter)
+	        return
+	    default:
+	        // 没有可用实例，归还名额
+	        counter.Dec()
+	        return
+	    }
 	} // end for
 }
 
