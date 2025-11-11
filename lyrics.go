@@ -35,7 +35,7 @@ func GetLyrics(adamID string, region string, language string, token string, musi
 		return "", err
 	}
 	if resp.StatusCode != 200 {
-		return "", errors.New("failed to get lyrics")
+		return "", errors.New(fmt.Sprintf("failed to get lyrics: %d", resp.StatusCode))
 	}
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -46,7 +46,7 @@ func GetLyrics(adamID string, region string, language string, token string, musi
 		return "", err
 	}
 	if respJson["errors"] != nil {
-		return "", errors.New("failed to get lyrics")
+		return "", errors.New(fmt.Sprintf("failed to get lyrics: %s", respJson["errors"]))
 	}
 	ttml := respJson["data"][0].(map[string]interface{})["attributes"].(map[string]interface{})["ttml"].(string)
 	return ttml, nil
