@@ -3,6 +3,7 @@ package main
 import (
 	"container/list"
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -11,6 +12,10 @@ var SchedulerInstance *Scheduler
 type TaskGroupKey struct {
 	AdamId string
 	Key    string
+}
+
+func (t TaskGroupKey) String() string {
+	return fmt.Sprintf("%s|%s", t.AdamId, t.Key)
 }
 
 type Task struct {
@@ -79,7 +84,7 @@ func (s *Scheduler) process(instance *DecryptInstance) {
 		groupKey := TaskGroupKey{AdamId: task.AdamId, Key: task.Key}
 
 		// 2. 尝试锁定 Key
-		if _, loaded := s.activeKeys.LoadOrStore(groupKey, true); loaded {
+		if _, loaded := s.activeKeys.LoadOrStore(groupKey.String(), true); loaded {
 			// 锁定失败：此 Key 已被其他 Instance 处理
 			s.requeueTask(task)  // 立即放回队列
 			s.queueCond.Signal() // 唤醒别人（可能包括自己）
@@ -90,7 +95,7 @@ func (s *Scheduler) process(instance *DecryptInstance) {
 		// 我们现在独占 groupKey，必须在处理完后释放
 		// 使用一个匿名函数块来管理 defer
 		func() {
-			defer s.activeKeys.Delete(groupKey) // 确保锁被释放
+			defer s.activeKeys.Delete(groupKey.String()) // 确保锁被释放
 
 			// 3. 检查上下文切换
 			if instance.currentKey == nil || *instance.currentKey != groupKey {

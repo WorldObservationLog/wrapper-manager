@@ -6,11 +6,13 @@ import (
 	"io"
 	"net"
 	"sync/atomic"
+	"time"
 )
 
 const (
 	defaultId   = "0"
 	prefetchKey = "skd://itunes.apple.com/P000000000/s1/e1"
+	timeout     = 5 * time.Second
 )
 
 type DecryptInstance struct {
@@ -37,6 +39,10 @@ func NewDecryptInstance(inst *WrapperInstance) (*DecryptInstance, error) {
 }
 
 func (d *DecryptInstance) decrypt(sample []byte) ([]byte, error) {
+	if err := d.conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, err
+	}
+	defer d.conn.SetDeadline(time.Time{}) // time.Time{}
 	err := binary.Write(d.conn, binary.LittleEndian, uint32(len(sample)))
 	if err != nil {
 		return nil, err
@@ -54,6 +60,10 @@ func (d *DecryptInstance) decrypt(sample []byte) ([]byte, error) {
 }
 
 func (d *DecryptInstance) switchContext(groupKey TaskGroupKey) error {
+	if err := d.conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
+	defer d.conn.SetDeadline(time.Time{}) // time.Time{}
 	if d.currentKey != nil {
 		_, err := d.conn.Write([]byte{0, 0, 0, 0})
 		if err != nil {
