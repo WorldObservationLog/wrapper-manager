@@ -1,8 +1,8 @@
 package main
 
 import (
+	"container/list"
 	"context"
-	"fmt"
 	"sync"
 )
 
@@ -26,217 +26,187 @@ type Result struct {
 	Error   error
 }
 
-// AtomicCounter 包含一个互斥锁，以确保 IncIfLess 操作的原子性
-type AtomicCounter struct {
-	value int32
-	mutex sync.Mutex
-}
-
-// IncIfLess 原子地检查当前值是否小于 max，如果是，则加一并返回 true。
-// 否则，返回 false。
-func (c *AtomicCounter) IncIfLess(max int32) bool {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	if c.value < max {
-		c.value++
-		return true
-	}
-	return false
-}
-
-// Dec 原子地减一
-func (c *AtomicCounter) Dec() int32 {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	c.value--
-	return c.value
-}
-
-// Get 原子地获取当前值
-func (c *AtomicCounter) Get() int32 {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	return c.value
-}
-
 type Scheduler struct {
-	taskQueues      sync.Map // map[TaskGroupKey]chan *Task
-	processingCount sync.Map // map[TaskGroupKey]*AtomicCounter
-	instances       chan *DecryptInstance
-	instanceMap     sync.Map // map[string]*DecryptInstance
-	maxConcurrent   int32
-	ctx             context.Context
-	cancel          context.CancelFunc
+	taskQueue *list.List
+	queueLock sync.Mutex
+	queueCond *sync.Cond
+
+	instanceMap sync.Map // map[string]*DecryptInstance
+	activeKeys  sync.Map // map[TaskGroupKey]bool
+
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func NewScheduler(maxConcurrent int32) *Scheduler {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Scheduler{
-		instances:     make(chan *DecryptInstance, 1000),
-		maxConcurrent: maxConcurrent,
-		ctx:           ctx,
-		cancel:        cancel,
+	s := &Scheduler{
+		taskQueue:   list.New(),
+		instanceMap: sync.Map{},
+		activeKeys:  sync.Map{},
+		ctx:         ctx,
+		cancel:      cancel,
 	}
+	s.queueCond = sync.NewCond(&s.queueLock)
+	return s
 }
 
-// getTaskQueue 获取或创建与 groupKey 关联的任务队列
-func (s *Scheduler) getTaskQueue(groupKey TaskGroupKey) (chan *Task, bool) {
-	queueVal, loaded := s.taskQueues.LoadOrStore(groupKey, make(chan *Task, 1000))
-	return queueVal.(chan *Task), loaded
-}
-
-// getCounter 获取或创建与 groupKey 关联的并发计数器
-func (s *Scheduler) getCounter(groupKey TaskGroupKey) *AtomicCounter {
-	counterVal, _ := s.processingCount.LoadOrStore(groupKey, &AtomicCounter{})
-	return counterVal.(*AtomicCounter)
-}
-
+// Submit 极其简单
 func (s *Scheduler) Submit(task *Task) {
-	groupKey := TaskGroupKey{AdamId: task.AdamId, Key: task.Key}
-	taskQueue, _ := s.getTaskQueue(groupKey)
-	counter := s.getCounter(groupKey) // 获取无锁计数器
-
-	// 1. 总是先把任务放入队列
-	taskQueue <- task
-
-	// 2. *** 核心性能修复 ***
-	// 只要当前活跃的 worker 数 *小于* 最大并发数，
-	// 我们就尝试启动一个新的 'trySchedule' 协程来“扩大” worker 规模。
-	// 'trySchedule' 内部的 'IncIfLess' 会原子地处理“竞态”，确保 worker 总数不会超过上限。
-	// 一旦 counter 达到 maxConcurrent, 'Submit' 将停止创建新的 goroutine，
-	// 完全依赖 'process' 协程的 'defer' 链来维持运行。
-	if counter.Get() < s.maxConcurrent {
-		go s.trySchedule(groupKey)
-	}
+	s.queueLock.Lock()
+	s.taskQueue.PushBack(task)
+	s.queueLock.Unlock()
+	s.queueCond.Signal() // 唤醒一个正在等待的 worker
 }
 
-// process 是实际的工作协程
-// 它被调用时，就假定并发名额已经 *预定* 成功
-func (s *Scheduler) process(instance *DecryptInstance, taskQueue chan *Task, groupKey TaskGroupKey, counter *AtomicCounter) {
-	var isBroken bool // 标记实例是否已损坏（如网络断开）
-
+// process 是每个 instance 的常驻协程
+func (s *Scheduler) process(instance *DecryptInstance) {
+	var isBroken bool
 	defer func() {
-		// 1. 释放并发名额
-		counter.Dec()
-
 		if isBroken {
-			// 2a. 实例已损坏，将其从系统中彻底移除
-			_ = s.RemoveInstance(instance.id)
-		} else {
-			// 2b. 实例正常，归还到池中 (如果它没有在别处被移除)
-			if _, exists := s.instanceMap.Load(instance.id); exists {
-				s.instances <- instance
-			}
+			_ = s.RemoveInstance(instance.id) // 实例损坏，移除
 		}
-
-		// 3. 总是尝试触发一次新的调度
-		//    以检查队列中是否还有剩余任务需要处理
-		go s.trySchedule(groupKey)
 	}()
 
-	// --- 上下文切换 ---
-	// 检查是否需要切换 Key
-	if instance.currentKey == nil || *instance.currentKey != groupKey {
-		if err := instance.switchContext(groupKey); err != nil {
-			// 切换上下文失败，通常意味着连接已断开
-			isBroken = true // 标记实例已损坏
-			return          // defer 将处理后续
-		}
-		// switchContext 成功，在 decrypt_instance.go 中已更新 instance.currentKey
-	}
-
-	// --- 任务处理循环 ---
-	// 循环处理，直到队列变空
+	// 外部循环：不断寻找 *新* 的 Key
 	for {
-		select {
-		case <-s.ctx.Done(): // 调度器关闭
-			isBroken = true // 认为实例已失效
-			return
-		case <-instance.stopCh: // 实例被移除
-			isBroken = true // 实例已被外部移除
-			return
-		case task := <-taskQueue:
-			// 再次检查实例是否存活
-			if _, ok := s.instanceMap.Load(instance.id); !ok {
-				isBroken = true // 实例已被移除
-				task.Result <- &Result{Success: false, Error: fmt.Errorf("instance %s removed during processing", instance.id)}
-				// 将任务放回队列头部 (或者也可以选择失败)
-				// go s.Submit(task) // 重新提交
-				return
+		// 1. 等待并获取一个 *任何* 任务
+		task := s.findWork(instance)
+		if task == nil {
+			return // 调度器或实例关闭
+		}
+
+		groupKey := TaskGroupKey{AdamId: task.AdamId, Key: task.Key}
+
+		// 2. 尝试锁定 Key
+		if _, loaded := s.activeKeys.LoadOrStore(groupKey, true); loaded {
+			// 锁定失败：此 Key 已被其他 Instance 处理
+			s.requeueTask(task)  // 立即放回队列
+			s.queueCond.Signal() // 唤醒别人（可能包括自己）
+			continue             // 立即寻找下一个任务
+		}
+
+		// --- 锁定成功 ---
+		// 我们现在独占 groupKey，必须在处理完后释放
+		// 使用一个匿名函数块来管理 defer
+		func() {
+			defer s.activeKeys.Delete(groupKey) // 确保锁被释放
+
+			// 3. 检查上下文切换
+			if instance.currentKey == nil || *instance.currentKey != groupKey {
+				if err := instance.switchContext(groupKey); err != nil {
+					isBroken = true     // 实例损坏
+					s.requeueTask(task) // 放回任务
+					task.Result <- &Result{Success: false, Error: err}
+					return // 退出匿名函数, 释放锁
+				}
 			}
 
-			// 执行解密
+			// 4. 处理第一个任务
 			result, err := instance.decrypt(task.Payload)
 			if err != nil {
-				// 解密失败（例如 I/O 错误），标记实例损坏
 				isBroken = true
+				s.requeueTask(task)
 				task.Result <- &Result{Success: false, Error: err}
-				return // 退出 process, defer 会处理
+				return // 退出匿名函数, 释放锁
 			}
-
-			// 任务成功
 			task.Result <- &Result{Success: true, Data: result}
 
+			// 5. 内部“贪婪循环”：处理此 Key 的所有剩余任务
+			for {
+				// 非阻塞地寻找下一个 *相同 Key* 的任务
+				nextTask := s.findSpecificWork(groupKey)
+				if nextTask == nil {
+					// 队列中已没有此 Key 的任务，工作完成
+					return // 退出匿名函数, 释放锁
+				}
+
+				// 处理下一个任务
+				result, err := instance.decrypt(nextTask.Payload)
+				if err != nil {
+					isBroken = true
+					s.requeueTask(nextTask)
+					nextTask.Result <- &Result{Success: false, Error: err}
+					return // 实例损坏，退出匿名函数, 释放锁
+				}
+				nextTask.Result <- &Result{Success: true, Data: result}
+			}
+		}() // 匿名函数结束
+
+		if isBroken {
+			return // 实例已损坏，退出 worker 协程
+		}
+
+		// 检查 stopCh (非阻塞)
+		select {
+		case <-instance.stopCh:
+			return // 实例被移除
 		default:
-			// taskQueue 已空，此 worker 协程完成其工作
-			return
+			// 继续外部循环，寻找新 Key
 		}
 	}
 }
 
-// trySchedule 是调度器，负责并发控制和分发工作
-func (s *Scheduler) trySchedule(groupKey TaskGroupKey) {
-	taskQueue, exists := s.getTaskQueue(groupKey)
-	if !exists {
-		return // 不应该发生，但作为保护
+// findSpecificWork (非阻塞)
+// 在队列中 *搜索* 一个匹配 Key 的任务
+func (s *Scheduler) findSpecificWork(groupKey TaskGroupKey) *Task {
+	s.queueLock.Lock()
+	defer s.queueLock.Unlock()
+
+	// 遍历 list
+	for e := s.taskQueue.Front(); e != nil; e = e.Next() {
+		task := e.Value.(*Task)
+		if task.AdamId == groupKey.AdamId && task.Key == groupKey.Key {
+			s.taskQueue.Remove(e) // 找到并移除
+			return task
+		}
 	}
+	return nil // 未找到
+}
 
-	// 1. (轻量) 检查：如果队列为空，直接退出，避免不必要的锁竞争
-	if len(taskQueue) == 0 {
-		return
-	}
+// findWork (阻塞)
+// 等待并拉取队列中的 *第一个* 任务
+func (s *Scheduler) findWork(instance *DecryptInstance) *Task {
+	s.queueLock.Lock()
+	defer s.queueLock.Unlock()
 
-	counter := s.getCounter(groupKey)
-
-	// 2. 核心并发控制：原子地尝试获取一个“名额”
-	if !counter.IncIfLess(s.maxConcurrent) {
-		// 已达到此 Key 的并发上限
-		// 正在运行的 process 协程在结束后会调用 trySchedule，所以现在退出是安全的
-		return
-	}
-
-	// --- 成功获取名额 ---
-	// 现在我们有责任启动一个 'process' 协程
-	// 'process' 协程将负责在退出时调用 counter.Dec()
-
-	// 3. 阻塞循环，直到获取一个 *有效* 且 *适用* 的实例
 	for {
-	    select {
-	    case <-s.ctx.Done():
-	        counter.Dec()
-	        return
-	    case instance := <-s.instances:
-	        // 检查实例有效性...
-	        go s.process(instance, taskQueue, groupKey, counter)
-	        return
-	    default:
-	        // 没有可用实例，归还名额
-	        counter.Dec()
-	        return
-	    }
-	} // end for
+		// 获取队列中的第一个任务
+		if e := s.taskQueue.Front(); e != nil {
+			task := s.taskQueue.Remove(e).(*Task)
+			return task
+		}
+
+		// 等待：队列为空
+		select {
+		case <-s.ctx.Done():
+			return nil // 调度器关闭
+		case <-instance.stopCh:
+			return nil // 实例被移除
+		default:
+			s.queueCond.Wait() // 等待 Submit 的信号
+		}
+	}
+}
+
+// requeueTask 将任务放回队列头部
+func (s *Scheduler) requeueTask(task *Task) {
+	s.queueLock.Lock()
+	s.taskQueue.PushFront(task)
+	s.queueLock.Unlock()
+	// 注意：这里不再 Signal，因为调用 requeueTask 的地方
+	// (通常是 process 循环) 会自己决定下一步动作
 }
 
 func (s *Scheduler) Shutdown() {
 	s.cancel()
+	s.queueCond.Broadcast() // 唤醒所有等待的 worker 让他们退出
 	s.instanceMap.Range(func(key, value interface{}) bool {
 		instance := value.(*DecryptInstance)
-		close(instance.stopCh) // 通知所有正在运行的 process 协程
+		close(instance.stopCh)
 		if instance.conn != nil {
 			_ = instance.conn.Close()
 		}
 		return true
 	})
-	// 清空实例池
-	close(s.instances)
 }

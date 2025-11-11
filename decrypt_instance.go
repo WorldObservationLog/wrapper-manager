@@ -104,7 +104,9 @@ func (s *Scheduler) AddInstance(inst *WrapperInstance) error {
 		return err
 	}
 	s.instanceMap.Store(inst.Id, instance)
-	s.instances <- instance
+
+	go s.process(instance)
+
 	return nil
 }
 
@@ -114,7 +116,9 @@ func (s *Scheduler) RemoveInstance(id string) error {
 		return fmt.Errorf("instance %s not found", id)
 	}
 	instance := inst.(*DecryptInstance)
+
 	close(instance.stopCh)
+
 	if instance.conn != nil {
 		_ = instance.conn.Close()
 	}
