@@ -194,8 +194,7 @@ func (s *Scheduler) requeueTask(task *Task) {
 	s.queueLock.Lock()
 	s.taskQueue.PushFront(task)
 	s.queueLock.Unlock()
-	// 注意：这里不再 Signal，因为调用 requeueTask 的地方
-	// (通常是 process 循环) 会自己决定下一步动作
+	s.queueCond.Signal()
 }
 
 func (s *Scheduler) Shutdown() {
