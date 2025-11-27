@@ -52,7 +52,7 @@ func (s *server) Status(c context.Context, req *emptypb.Empty) (*pb.StatusReply,
 			Status:      len(Instances) != 0,
 			Regions:     regions,
 			ClientCount: int32(len(Instances)),
-			Ready:       len(Instances) == ShouldStartInstances,
+			Ready:       len(Instances) >= ShouldStartInstances,
 		},
 	}, nil
 }
