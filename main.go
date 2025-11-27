@@ -190,7 +190,7 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 			})
 			continue
 		}
-		SchedulerInstance.Submit(&task)
+		go WMDispatcher.Submit(&task)
 		result := <-task.Result
 		if result.Error != nil {
 			_ = stream.Send(&pb.DecryptReply{
@@ -498,7 +498,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	SchedulerInstance = NewScheduler(3)
+	WMDispatcher = NewDispatcher()
 
 	Instances = make([]*WrapperInstance, 0)
 	if _, err := os.Stat("data/storefront_ids.json"); !errors.Is(err, os.ErrNotExist) {
