@@ -186,6 +186,9 @@ func wrapperReady(instance *WrapperInstance) {
 	instance.NoRestart = false
 	go LoginDoneHandler(instance.Id)
 	log.Info(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), " Wrapper ready")
+	if len(Instances) == ShouldStartInstances {
+		Ready = true
+	}
 }
 
 func wrapperDown(instance *WrapperInstance) {
