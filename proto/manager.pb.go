@@ -132,6 +132,7 @@ type StatusData struct {
 	Status        bool                   `protobuf:"varint,1,opt,name=status,proto3" json:"status,omitempty"`
 	Regions       []string               `protobuf:"bytes,2,rep,name=regions,proto3" json:"regions,omitempty"`
 	ClientCount   int32                  `protobuf:"varint,3,opt,name=client_count,json=clientCount,proto3" json:"client_count,omitempty"`
+	Ready         bool                   `protobuf:"varint,4,opt,name=ready,proto3" json:"ready,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -185,6 +186,13 @@ func (x *StatusData) GetClientCount() int32 {
 		return x.ClientCount
 	}
 	return 0
+}
+
+func (x *StatusData) GetReady() bool {
+	if x != nil {
+		return x.Ready
+	}
+	return false
 }
 
 type LoginRequest struct {
@@ -1510,12 +1518,13 @@ const file_proto_manager_proto_rawDesc = "" +
 	"\x03msg\x18\x02 \x01(\tR\x03msg\"j\n" +
 	"\vStatusReply\x12/\n" +
 	"\x06header\x18\x01 \x01(\v2\x17.manager.v1.ReplyHeaderR\x06header\x12*\n" +
-	"\x04data\x18\x02 \x01(\v2\x16.manager.v1.StatusDataR\x04data\"a\n" +
+	"\x04data\x18\x02 \x01(\v2\x16.manager.v1.StatusDataR\x04data\"w\n" +
 	"\n" +
 	"StatusData\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\bR\x06status\x12\x18\n" +
 	"\aregions\x18\x02 \x03(\tR\aregions\x12!\n" +
-	"\fclient_count\x18\x03 \x01(\x05R\vclientCount\"9\n" +
+	"\fclient_count\x18\x03 \x01(\x05R\vclientCount\x12\x14\n" +
+	"\x05ready\x18\x04 \x01(\bR\x05ready\"9\n" +
 	"\fLoginRequest\x12)\n" +
 	"\x04data\x18\x01 \x01(\v2\x15.manager.v1.LoginDataR\x04data\"g\n" +
 	"\tLoginData\x12\x1a\n" +
