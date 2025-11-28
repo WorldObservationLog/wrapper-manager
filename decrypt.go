@@ -69,14 +69,14 @@ func (d *Dispatcher) selectInstance(adamId string) *DecryptInstance {
 
 	for _, inst := range d.Instances {
 		if inst.GetLastAdamId() == adamId {
-			logrus.Debugf("selected instance %s for adamid %s, method 1", inst.id, adamId)
+			// logrus.Debugf("selected instance %s for adamid %s, method 1", inst.id, adamId)
 			return inst
 		}
 	}
 
 	for _, inst := range d.Instances {
 		if inst.GetLastAdamId() == "" && checkAvailableOnRegion(adamId, inst.region, false) {
-			logrus.Debugf("selected instance %s for adamid %s, method 2", inst.id, adamId)
+			// logrus.Debugf("selected instance %s for adamid %s, method 2", inst.id, adamId)
 			return inst
 		}
 	}
@@ -89,7 +89,7 @@ func (d *Dispatcher) selectInstance(adamId string) *DecryptInstance {
 		}
 
 		if oldestInstance == nil || inst.GetLastHandleTime().Before(oldestInstance.GetLastHandleTime()) {
-			logrus.Debugf("selected instance %s for adamid %s, method 3", inst.id, adamId)
+			// logrus.Debugf("selected instance %s for adamid %s, method 3", inst.id, adamId)
 			oldestInstance = inst
 		}
 	}
