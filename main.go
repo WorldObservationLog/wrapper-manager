@@ -115,8 +115,7 @@ func (s *server) Logout(c context.Context, req *pb.LogoutRequest) (*pb.LogoutRep
 		}, nil
 	}
 	instance.NoRestart = true
-	process := instance.Cmd.Process
-	err := process.Kill()
+	err := KillWrapper(instance.Id)
 	if err != nil {
 		return &pb.LogoutReply{
 			Header: &pb.ReplyHeader{
@@ -502,7 +501,7 @@ func main() {
 	WMDispatcher = NewDispatcher()
 
 	Instances = make([]*WrapperInstance, 0)
-	if _, err := os.Stat("data/storefront_ids.json"); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat("data/instances.json"); !errors.Is(err, os.ErrNotExist) {
 		instancesInFile := LoadInstance()
 		ShouldStartInstances = len(instancesInFile)
 		for _, inst := range instancesInFile {
