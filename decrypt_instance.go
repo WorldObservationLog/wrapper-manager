@@ -69,7 +69,7 @@ func (d *DecryptInstance) Process(task *Task) {
 	currentLastKey := d.LastKey
 	d.stateMu.Unlock()
 
-	if currentLastKey != "" && currentLastKey != task.Key {
+	if currentLastKey == "" || currentLastKey != task.Key {
 		err := d.switchContext(task.AdamId, task.Key)
 		if err != nil {
 			d.Unavailable()
