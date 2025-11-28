@@ -21,8 +21,10 @@ import (
 )
 
 var (
-	PROXY      string
-	DeviceInfo string
+	PROXY                string
+	DeviceInfo           string
+	Ready                bool
+	ShouldStartInstances int
 )
 
 type server struct {
@@ -51,6 +53,7 @@ func (s *server) Status(c context.Context, req *emptypb.Empty) (*pb.StatusReply,
 			Status:      len(Instances) != 0,
 			Regions:     regions,
 			ClientCount: int32(len(Instances)),
+			Ready:       Ready,
 		},
 	}, nil
 }
@@ -188,7 +191,7 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 			})
 			continue
 		}
-		SchedulerInstance.Submit(&task)
+		go WMDispatcher.Submit(&task)
 		result := <-task.Result
 		if result.Error != nil {
 			_ = stream.Send(&pb.DecryptReply{
@@ -496,11 +499,13 @@ func main() {
 		os.Exit(0)
 	}
 
-	SchedulerInstance = NewScheduler(3)
+	WMDispatcher = NewDispatcher()
 
 	Instances = make([]*WrapperInstance, 0)
 	if _, err := os.Stat("data/storefront_ids.json"); !errors.Is(err, os.ErrNotExist) {
-		for _, inst := range LoadInstance() {
+		instancesInFile := LoadInstance()
+		ShouldStartInstances = len(instancesInFile)
+		for _, inst := range instancesInFile {
 			go WrapperStart(inst.Id)
 		}
 	}

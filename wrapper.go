@@ -182,27 +182,29 @@ func wrapperReady(instance *WrapperInstance) {
 	region := parseStorefrontID(string(storefrontID))
 	instance.Region = region
 	InsertInstance(instance)
-	err = SchedulerInstance.AddInstance(instance)
-	if err != nil {
-		return
-	}
+	WMDispatcher.AddInstance(instance)
 	instance.NoRestart = false
 	go LoginDoneHandler(instance.Id)
 	log.Info(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), " Wrapper ready")
+	if len(Instances) == ShouldStartInstances {
+		Ready = true
+	}
 }
 
 func wrapperDown(instance *WrapperInstance) {
 	log.Info(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), " Wrapper Down")
 	RemoveInstance(instance)
-	err := SchedulerInstance.RemoveInstance(instance.Id)
-	if err != nil {
-		return
-	}
+	WMDispatcher.RemoveInstance(instance.Id)
 	if !instance.NoRestart {
 		go WrapperStart(instance.Id)
 	} else {
 		SaveInstances()
 	}
+}
+
+func KillWrapper(id string) error {
+	instance := GetInstance(id)
+	return instance.Cmd.Process.Kill()
 }
 
 func provide2FACode(id string, code string) {

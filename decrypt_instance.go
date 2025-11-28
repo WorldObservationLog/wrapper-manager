@@ -3,9 +3,10 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"io"
 	"net"
-	"sync/atomic"
+	"sync"
 	"time"
 )
 
@@ -16,12 +17,15 @@ const (
 )
 
 type DecryptInstance struct {
-	id         string
-	region     string
-	conn       net.Conn
-	currentKey *TaskGroupKey
-	processing int32
-	stopCh     chan struct{}
+	id             string
+	region         string
+	conn           net.Conn
+	connMu         sync.Mutex
+	stateMu        sync.RWMutex
+	LastAdamId     string
+	LastKey        string
+	LastHandleTime time.Time
+	Available      bool
 }
 
 func NewDecryptInstance(inst *WrapperInstance) (*DecryptInstance, error) {
@@ -30,19 +34,82 @@ func NewDecryptInstance(inst *WrapperInstance) (*DecryptInstance, error) {
 		return nil, err
 	}
 	instance := &DecryptInstance{
-		id:     inst.Id,
-		region: inst.Region,
-		conn:   conn,
-		stopCh: make(chan struct{}),
+		id:             inst.Id,
+		region:         inst.Region,
+		conn:           conn,
+		LastAdamId:     "",
+		LastKey:        "",
+		LastHandleTime: time.Time{},
 	}
 	return instance, nil
+}
+
+func (d *DecryptInstance) Unavailable() {
+	err := d.conn.Close()
+	if err != nil {
+		logrus.Errorf("failed to close conn of insttance %s: %s", d.id, err)
+	}
+	err = KillWrapper(d.id)
+	if err != nil {
+		logrus.Errorf("failed to kill insttance %s: %s", d.id, err)
+	}
+}
+
+func (d *DecryptInstance) GetLastAdamId() string {
+	d.stateMu.RLock()
+	defer d.stateMu.RUnlock()
+	return d.LastAdamId
+}
+
+func (d *DecryptInstance) GetLastHandleTime() time.Time {
+	d.stateMu.RLock()
+	defer d.stateMu.RUnlock()
+	return d.LastHandleTime
+}
+
+func (d *DecryptInstance) Process(task *Task) {
+	d.connMu.Lock()
+	defer d.connMu.Unlock()
+
+	d.stateMu.Lock()
+	d.LastHandleTime = time.Now()
+	currentLastKey := d.LastKey
+	d.stateMu.Unlock()
+
+	if currentLastKey == "" || currentLastKey != task.Key {
+		err := d.switchContext(task.AdamId, task.Key)
+		if err != nil {
+			d.Unavailable()
+			task.Result <- &Result{
+				Success: false,
+				Data:    task.Payload,
+				Error:   err,
+			}
+			return
+		}
+	}
+	result, err := d.decrypt(task.Payload)
+	if err != nil {
+		d.Unavailable()
+		task.Result <- &Result{
+			Success: false,
+			Data:    task.Payload,
+			Error:   err,
+		}
+		return
+	}
+	task.Result <- &Result{
+		Success: true,
+		Data:    result,
+		Error:   nil,
+	}
 }
 
 func (d *DecryptInstance) decrypt(sample []byte) ([]byte, error) {
 	if err := d.conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, err
 	}
-	defer d.conn.SetDeadline(time.Time{}) // time.Time{}
+	defer d.conn.SetDeadline(time.Time{})
 	err := binary.Write(d.conn, binary.LittleEndian, uint32(len(sample)))
 	if err != nil {
 		return nil, err
@@ -59,18 +126,18 @@ func (d *DecryptInstance) decrypt(sample []byte) ([]byte, error) {
 	return de, nil
 }
 
-func (d *DecryptInstance) switchContext(groupKey TaskGroupKey) error {
+func (d *DecryptInstance) switchContext(adamId string, key string) error {
 	if err := d.conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return err
 	}
 	defer d.conn.SetDeadline(time.Time{}) // time.Time{}
-	if d.currentKey != nil {
+	if d.LastKey != "" {
 		_, err := d.conn.Write([]byte{0, 0, 0, 0})
 		if err != nil {
 			return err
 		}
 	}
-	if groupKey.Key == prefetchKey {
+	if key == prefetchKey {
 		_, err := d.conn.Write([]byte{byte(len(defaultId))})
 		if err != nil {
 			return err
@@ -80,57 +147,26 @@ func (d *DecryptInstance) switchContext(groupKey TaskGroupKey) error {
 			return err
 		}
 	} else {
-		_, err := d.conn.Write([]byte{byte(len(groupKey.AdamId))})
+		_, err := d.conn.Write([]byte{byte(len(adamId))})
 		if err != nil {
 			return err
 		}
-		_, err = io.WriteString(d.conn, groupKey.AdamId)
+		_, err = io.WriteString(d.conn, adamId)
 		if err != nil {
 			return err
 		}
 	}
-	_, err := d.conn.Write([]byte{byte(len(groupKey.Key))})
+	_, err := d.conn.Write([]byte{byte(len(key))})
 	if err != nil {
 		return err
 	}
-	_, err = io.WriteString(d.conn, groupKey.Key)
+	_, err = io.WriteString(d.conn, key)
 	if err != nil {
 		return err
 	}
-	d.currentKey = &groupKey
-	return nil
-}
-
-func (d *DecryptInstance) IsProcessing() bool {
-	return atomic.LoadInt32(&d.processing) != 0
-}
-
-func (s *Scheduler) AddInstance(inst *WrapperInstance) error {
-	if _, exists := s.instanceMap.Load(inst.Id); exists {
-		return fmt.Errorf("instance %s already exists", inst.Id)
-	}
-	instance, err := NewDecryptInstance(inst)
-	if err != nil {
-		return err
-	}
-	s.instanceMap.Store(inst.Id, instance)
-
-	go s.process(instance)
-
-	return nil
-}
-
-func (s *Scheduler) RemoveInstance(id string) error {
-	inst, exists := s.instanceMap.LoadAndDelete(id)
-	if !exists {
-		return fmt.Errorf("instance %s not found", id)
-	}
-	instance := inst.(*DecryptInstance)
-
-	close(instance.stopCh)
-
-	if instance.conn != nil {
-		_ = instance.conn.Close()
-	}
+	d.stateMu.Lock()
+	d.LastAdamId = adamId
+	d.LastKey = key
+	d.stateMu.Unlock()
 	return nil
 }
