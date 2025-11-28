@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"io"
 	"net"
 	"sync"
@@ -44,8 +45,14 @@ func NewDecryptInstance(inst *WrapperInstance) (*DecryptInstance, error) {
 }
 
 func (d *DecryptInstance) Unavailable() {
-	d.conn.Close()
-	KillWrapper(d.id)
+	err := d.conn.Close()
+	if err != nil {
+		logrus.Errorf("failed to close conn of insttance %s: %s", d.id, err)
+	}
+	err = KillWrapper(d.id)
+	if err != nil {
+		logrus.Errorf("failed to kill insttance %s: %s", d.id, err)
+	}
 }
 
 func (d *DecryptInstance) GetLastAdamId() string {
