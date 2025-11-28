@@ -508,6 +508,9 @@ func main() {
 		for _, inst := range instancesInFile {
 			go WrapperStart(inst.Id)
 		}
+	} else {
+		ShouldStartInstances = 0
+		Ready = true
 	}
 
 	log.Printf("wrapperManager running at %s:%d", *host, *port)
