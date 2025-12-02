@@ -25,6 +25,7 @@ type DecryptInstance struct {
 	LastAdamId     string
 	LastKey        string
 	LastHandleTime time.Time
+	closeOnce      sync.Once
 	Available      bool
 }
 
@@ -45,14 +46,16 @@ func NewDecryptInstance(inst *WrapperInstance) (*DecryptInstance, error) {
 }
 
 func (d *DecryptInstance) Unavailable() {
-	err := d.conn.Close()
-	if err != nil {
-		logrus.Errorf("failed to close conn of insttance %s: %s", d.id, err)
-	}
-	err = KillWrapper(d.id)
-	if err != nil {
-		logrus.Errorf("failed to kill insttance %s: %s", d.id, err)
-	}
+	d.closeOnce.Do(func() {
+		err := d.conn.Close()
+		if err != nil {
+			logrus.Errorf("failed to close conn of insttance %s: %s", d.id, err)
+		}
+		err = KillWrapper(d.id)
+		if err != nil {
+			logrus.Errorf("failed to kill insttance %s: %s", d.id, err)
+		}
+	})
 }
 
 func (d *DecryptInstance) GetLastAdamId() string {

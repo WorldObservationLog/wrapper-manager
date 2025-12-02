@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"github.com/sirupsen/logrus"
 	"sync"
 )
@@ -56,6 +57,14 @@ func (d *Dispatcher) RemoveInstance(id string) {
 
 func (d *Dispatcher) Submit(task *Task) {
 	inst := d.selectInstance(task.AdamId)
+	if inst == nil {
+		task.Result <- &Result{
+			Success: false,
+			Data:    task.Payload,
+			Error:   fmt.Errorf("no available instance"),
+		}
+		return
+	}
 	inst.Process(task)
 }
 

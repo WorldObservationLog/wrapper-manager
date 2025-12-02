@@ -204,6 +204,15 @@ func wrapperDown(instance *WrapperInstance) {
 
 func KillWrapper(id string) error {
 	instance := GetInstance(id)
+	if instance == nil {
+		return fmt.Errorf("instance %s not found", id)
+	}
+	if instance.Cmd == nil {
+		return fmt.Errorf("instance %s cmd is nil", id)
+	}
+	if instance.Cmd.Process == nil {
+		return fmt.Errorf("instance %s process is nil", id)
+	}
 	return instance.Cmd.Process.Kill()
 }
 
