@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/sirupsen/logrus"
+	"math/rand"
 	"sync"
 )
 
@@ -90,18 +91,17 @@ func (d *Dispatcher) selectInstance(adamId string) *DecryptInstance {
 		}
 	}
 
-	var oldestInstance *DecryptInstance
+	var candidates []*DecryptInstance
 
 	for _, inst := range d.Instances {
-		if !checkAvailableOnRegion(adamId, inst.region, false) {
-			continue
-		}
-
-		if oldestInstance == nil || inst.GetLastHandleTime().Before(oldestInstance.GetLastHandleTime()) {
-			// logrus.Debugf("selected instance %s for adamid %s, method 3", inst.id, adamId)
-			oldestInstance = inst
+		if checkAvailableOnRegion(adamId, inst.region, false) {
+			candidates = append(candidates, inst)
 		}
 	}
 
-	return oldestInstance
+	if len(candidates) > 0 {
+		return candidates[rand.Intn(len(candidates))]
+	}
+
+	return nil
 }
