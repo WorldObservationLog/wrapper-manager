@@ -27,6 +27,10 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) bool {
 	}
 
 	val, _, _ := songRegionSingleFlight.Do(cacheKey, func() (interface{}, error) {
+		if adamId == "0" {
+			return true, nil
+		}
+
 		var url string
 		if mv {
 			url = fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/music-videos/%s", region, adamId)
