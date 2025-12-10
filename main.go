@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	pb "github.com/WorldObservationLog/wrapper-manager/proto"
 	"github.com/gofrs/uuid/v5"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
@@ -17,7 +18,6 @@ import (
 	"os/user"
 	"slices"
 	"strings"
-	pb "wrapper-manager/proto"
 )
 
 var (
