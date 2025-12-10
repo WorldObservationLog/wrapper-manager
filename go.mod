@@ -1,4 +1,4 @@
-module wrapper-manager
+module github.com/WorldObservationLog/wrapper-manager
 
 go 1.23.0
 
