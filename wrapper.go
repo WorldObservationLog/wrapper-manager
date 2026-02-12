@@ -15,6 +15,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+)
+
+var (
+	storefrontCache     map[int]string
+	storefrontCacheOnce sync.Once
 )
 
 func parseStorefrontID(id string) string {
@@ -22,26 +28,30 @@ func parseStorefrontID(id string) string {
 	if err != nil {
 		panic(err)
 	}
-	type StorefrontMapping struct {
-		Name         string `json:"name"`
-		Code         string `json:"code"`
-		StorefrontId int    `json:"storefrontId"`
-	}
-	var mapping []StorefrontMapping
-	file, err := os.ReadFile("data/storefront_ids.json")
-	if err != nil {
-		panic(err)
-	}
-	err = json.Unmarshal(file, &mapping)
-	if err != nil {
-		panic(err)
-	}
-	for _, element := range mapping {
-		if element.StorefrontId == sfID {
-			return element.Code
+
+	storefrontCacheOnce.Do(func() {
+		type StorefrontMapping struct {
+			Name         string `json:"name"`
+			Code         string `json:"code"`
+			StorefrontId int    `json:"storefrontId"`
 		}
-	}
-	return ""
+		var mapping []StorefrontMapping
+		file, err := os.ReadFile("data/storefront_ids.json")
+		if err != nil {
+			panic(err)
+		}
+		err = json.Unmarshal(file, &mapping)
+		if err != nil {
+			panic(err)
+		}
+
+		storefrontCache = make(map[int]string)
+		for _, element := range mapping {
+			storefrontCache[element.StorefrontId] = element.Code
+		}
+	})
+
+	return storefrontCache[sfID]
 }
 
 func PrepareWrapper(mirror bool) {
