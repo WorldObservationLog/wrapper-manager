@@ -559,7 +559,7 @@ func main() {
 		list := GlobalManager.List()
 		ShouldStartInstances = len(list)
 		for _, inst := range list {
-			go WrapperStart(inst.Id)
+			go WrapperStart(inst.Id, nil)
 		}
 	} else {
 		GlobalManager = NewInstanceManager()

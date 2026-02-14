@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/artdarek/go-unzip"
 	"github.com/creack/pty"
@@ -115,12 +116,13 @@ func WrapperInitial(account string, password string) {
 	go wrapperDown(&instance)
 }
 
-func WrapperStart(id string) {
+func WrapperStart(id string, crashTimes []time.Time) {
 	instance := WrapperInstance{
 		Id:          id,
 		DecryptPort: GenerateUniquePort(),
 		M3U8Port:    GenerateUniquePort(),
 		NoRestart:   false,
+		CrashTimes:  crashTimes,
 	}
 
 	args := []string{
@@ -242,7 +244,25 @@ func wrapperDown(instance *WrapperInstance) {
 	// WMDispatcher.RemoveInstance(instance.Id) // Removed
 
 	if !instance.NoRestart {
-		go WrapperStart(instance.Id)
+		// Check crash loop
+		now := time.Now()
+		// Filter out crashes older than 1 minute
+		var newCrashTimes []time.Time
+		for _, t := range instance.CrashTimes {
+			if now.Sub(t) < time.Minute {
+				newCrashTimes = append(newCrashTimes, t)
+			}
+		}
+		newCrashTimes = append(newCrashTimes, now)
+
+		if len(newCrashTimes) >= 5 {
+			log.Errorf("Wrapper %s crashed %d times in 1 minute, stopping restart", instance.Id, len(newCrashTimes))
+			// We don't restart, effectively stopping it.
+			// Should we alert user? logging error is good enough for now.
+			return
+		}
+
+		go WrapperStart(instance.Id, newCrashTimes)
 	} else {
 		GlobalManager.Save()
 	}

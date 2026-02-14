@@ -3,6 +3,7 @@ package main
 import (
 	"os/exec"
 	"sync"
+	"time"
 )
 
 type WrapperInstance struct {
@@ -14,6 +15,7 @@ type WrapperInstance struct {
 	Cmd         *exec.Cmd      `json:"-"`
 	Client      *DecryptClient `json:"-"`
 	Ready       bool           `json:"-"`
+	CrashTimes  []time.Time    `json:"-"`
 	mu          sync.Mutex
 }
 
