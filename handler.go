@@ -1,10 +1,11 @@
 package main
 
 import (
-	pb "github.com/WorldObservationLog/wrapper-manager/proto"
-	"google.golang.org/grpc"
 	"log"
 	"sync"
+
+	pb "github.com/WorldObservationLog/wrapper-manager/proto"
+	"google.golang.org/grpc"
 )
 
 var LoginConnMap = sync.Map{}
@@ -24,7 +25,7 @@ func Login2FAHandler(id string) {
 }
 
 func LoginDoneHandler(id string) {
-	SaveInstances()
+	GlobalManager.Save()
 	conn, _ := LoginConnMap.LoadAndDelete(id)
 	if conn == nil {
 		return

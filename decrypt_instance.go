@@ -3,11 +3,12 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"io"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -16,61 +17,55 @@ const (
 	timeout     = 5 * time.Second
 )
 
-type DecryptInstance struct {
-	id             string
-	region         string
+type DecryptClient struct {
+	port           int
 	conn           net.Conn
 	connMu         sync.Mutex
 	stateMu        sync.RWMutex
 	LastAdamId     string
 	LastKey        string
 	LastHandleTime time.Time
-	closeOnce      sync.Once
-	Available      bool
 }
 
-func NewDecryptInstance(inst *WrapperInstance) (*DecryptInstance, error) {
-	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", inst.DecryptPort))
+func NewDecryptClient(port int) (*DecryptClient, error) {
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return nil, err
 	}
-	instance := &DecryptInstance{
-		id:             inst.Id,
-		region:         inst.Region,
+	client := &DecryptClient{
+		port:           port,
 		conn:           conn,
 		LastAdamId:     "",
 		LastKey:        "",
 		LastHandleTime: time.Time{},
 	}
-	return instance, nil
+	return client, nil
 }
 
-func (d *DecryptInstance) Unavailable() {
-	d.closeOnce.Do(func() {
+func (d *DecryptClient) Close() {
+	d.connMu.Lock()
+	defer d.connMu.Unlock()
+	if d.conn != nil {
 		err := d.conn.Close()
 		if err != nil {
-			logrus.Errorf("failed to close conn of insttance %s: %s", d.id, err)
+			logrus.Errorf("failed to close client conn: %s", err)
 		}
-		err = KillWrapper(d.id)
-		if err != nil {
-			logrus.Errorf("failed to kill insttance %s: %s", d.id, err)
-		}
-	})
+	}
 }
 
-func (d *DecryptInstance) GetLastAdamId() string {
+func (d *DecryptClient) GetLastAdamId() string {
 	d.stateMu.RLock()
 	defer d.stateMu.RUnlock()
 	return d.LastAdamId
 }
 
-func (d *DecryptInstance) GetLastHandleTime() time.Time {
+func (d *DecryptClient) GetLastHandleTime() time.Time {
 	d.stateMu.RLock()
 	defer d.stateMu.RUnlock()
 	return d.LastHandleTime
 }
 
-func (d *DecryptInstance) Process(task *Task) {
+func (d *DecryptClient) Process(task *Task) {
 	d.connMu.Lock()
 	defer d.connMu.Unlock()
 
@@ -82,7 +77,7 @@ func (d *DecryptInstance) Process(task *Task) {
 	if currentLastKey == "" || currentLastKey != task.Key {
 		err := d.switchContext(task.AdamId, task.Key)
 		if err != nil {
-			d.Unavailable()
+			// d.Unavailable() // Removed, responsibility of WrapperInstance
 			task.Result <- &Result{
 				Success: false,
 				Data:    task.Payload,
@@ -93,7 +88,7 @@ func (d *DecryptInstance) Process(task *Task) {
 	}
 	result, err := d.decrypt(task.Payload)
 	if err != nil {
-		d.Unavailable()
+		// d.Unavailable() // Removed
 		task.Result <- &Result{
 			Success: false,
 			Data:    task.Payload,
@@ -108,7 +103,7 @@ func (d *DecryptInstance) Process(task *Task) {
 	}
 }
 
-func (d *DecryptInstance) decrypt(sample []byte) ([]byte, error) {
+func (d *DecryptClient) decrypt(sample []byte) ([]byte, error) {
 	if err := d.conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, err
 	}
@@ -129,7 +124,7 @@ func (d *DecryptInstance) decrypt(sample []byte) ([]byte, error) {
 	return de, nil
 }
 
-func (d *DecryptInstance) switchContext(adamId string, key string) error {
+func (d *DecryptClient) switchContext(adamId string, key string) error {
 	if err := d.conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return err
 	}

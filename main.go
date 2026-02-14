@@ -5,6 +5,16 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/signal"
+	"os/user"
+	"slices"
+	"strings"
+	"sync"
+	"syscall"
+
 	pb "github.com/WorldObservationLog/wrapper-manager/proto"
 	"github.com/gofrs/uuid/v5"
 	log "github.com/sirupsen/logrus"
@@ -12,12 +22,6 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/protobuf/types/known/emptypb"
-	"io"
-	"net"
-	"os"
-	"os/user"
-	"slices"
-	"strings"
 )
 
 var (
@@ -39,20 +43,22 @@ func (s *server) Status(c context.Context, req *emptypb.Empty) (*pb.StatusReply,
 		log.Infof("status request from unknown peer")
 	}
 	var regions []string
-	for _, instance := range Instances {
+	list := GlobalManager.List()
+	for _, instance := range list {
 		if !slices.Contains(regions, instance.Region) {
 			regions = append(regions, instance.Region)
 		}
 	}
+	listCount := len(list)
 	return &pb.StatusReply{
 		Header: &pb.ReplyHeader{
 			Code: 0,
 			Msg:  "SUCCESS",
 		},
 		Data: &pb.StatusData{
-			Status:      len(Instances) != 0,
+			Status:      listCount != 0,
 			Regions:     regions,
-			ClientCount: int32(len(Instances)),
+			ClientCount: int32(listCount),
 			Ready:       Ready,
 		},
 	}, nil
@@ -74,17 +80,16 @@ func (s *server) Login(stream grpc.BidiStreamingServer[pb.LoginRequest, pb.Login
 			return err
 		}
 		id := uuid.NewV5(uuid.FromStringOrNil("77777777-7777-7777-7777-77777777"), req.Data.Username).String()
-		for _, instance := range Instances {
-			if instance.Id == id {
-				err = stream.Send(&pb.LoginReply{
-					Header: &pb.ReplyHeader{
-						Code: -1,
-						Msg:  "already login",
-					},
-				})
-				if err != nil {
-					return err
-				}
+		instance := GlobalManager.Get(id)
+		if instance != nil {
+			err = stream.Send(&pb.LoginReply{
+				Header: &pb.ReplyHeader{
+					Code: -1,
+					Msg:  "already login",
+				},
+			})
+			if err != nil {
+				return err
 			}
 		}
 		if req.Data.TwoStepCode != "" {
@@ -104,8 +109,8 @@ func (s *server) Logout(c context.Context, req *pb.LogoutRequest) (*pb.LogoutRep
 		log.Infof("logout request from unknown peer")
 	}
 	id := uuid.NewV5(uuid.FromStringOrNil("77777777-7777-7777-7777-77777777"), req.Data.Username).String()
-	instance := GetInstance(id)
-	if instance.Id == "" {
+	instance := GlobalManager.Get(id)
+	if instance == nil {
 		return &pb.LogoutReply{
 			Header: &pb.ReplyHeader{
 				Code: -1,
@@ -142,6 +147,31 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 	} else {
 		log.Infof("decrypt stream from unknown peer")
 	}
+
+	responses := make(chan *pb.DecryptReply, 100)
+	ctx := stream.Context()
+	var wg sync.WaitGroup
+
+	// Send Loop
+	sendErr := make(chan error, 1)
+	go func() {
+		defer close(sendErr)
+		for resp := range responses {
+			if err := stream.Send(resp); err != nil {
+				sendErr <- err
+				return
+			}
+		}
+	}()
+
+	// Wait for all workers to finish then close responses channel to stop sender
+	defer func() {
+		wg.Wait()
+		close(responses)
+		// Ensure we don't return until sender is done (optional, but good for cleanup)
+		<-sendErr
+	}()
+
 	for {
 		req, err := stream.Recv()
 		if err == io.EOF {
@@ -150,91 +180,69 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 		if err != nil {
 			return err
 		}
+
+		// Check if send loop failed
+		select {
+		case err := <-sendErr:
+			return err
+		default:
+		}
+
 		if req.Data.AdamId == "KEEPALIVE" {
-			_ = stream.Send(&pb.DecryptReply{
-				Header: &pb.ReplyHeader{
-					Code: 0,
-					Msg:  "SUCCESS",
-				},
-				Data: &pb.DecryptData{
-					AdamId: "KEEPALIVE",
-				},
-			})
+			select {
+			case responses <- &pb.DecryptReply{
+				Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"},
+				Data:   &pb.DecryptData{AdamId: "KEEPALIVE"},
+			}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 			continue
 		}
-		task := Task{
-			AdamId:  req.Data.AdamId,
-			Key:     req.Data.Key,
-			Payload: req.Data.Sample,
-			Result:  make(chan *Result),
-		}
-		available := false
-		for _, inst := range Instances {
-			ok, err := checkAvailableOnRegion(req.Data.AdamId, inst.Region, false)
-			if err != nil {
-				_ = stream.Send(&pb.DecryptReply{
-					Header: &pb.ReplyHeader{
-						Code: -1,
-						Msg:  err.Error(),
-					},
+
+		wg.Add(1)
+		go func(r *pb.DecryptRequest) {
+			defer wg.Done()
+
+			task := Task{
+				AdamId:  r.Data.AdamId,
+				Key:     r.Data.Key,
+				Payload: r.Data.Sample,
+				Result:  make(chan *Result, 1),
+			}
+
+			// We rely on WMDispatcher.Submit -> GlobalManager.SelectInstance for availability checking.
+			WMDispatcher.Submit(&task)
+			result := <-task.Result
+
+			var reply *pb.DecryptReply
+			if result.Error != nil {
+				reply = &pb.DecryptReply{
+					Header: &pb.ReplyHeader{Code: -1, Msg: result.Error.Error()},
 					Data: &pb.DecryptData{
-						AdamId:      req.Data.AdamId,
-						Key:         req.Data.Key,
-						Sample:      req.Data.Sample,
-						SampleIndex: req.Data.SampleIndex,
+						AdamId:      r.Data.AdamId,
+						Key:         r.Data.Key,
+						Sample:      r.Data.Sample,
+						SampleIndex: r.Data.SampleIndex,
 					},
-				})
-				break
+				}
+			} else {
+				reply = &pb.DecryptReply{
+					Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"},
+					Data: &pb.DecryptData{
+						AdamId:      r.Data.AdamId,
+						Key:         r.Data.Key,
+						SampleIndex: r.Data.SampleIndex,
+						Sample:      result.Data,
+					},
+				}
 			}
-			if ok {
-				available = true
-				break
+
+			select {
+			case responses <- reply:
+			case <-ctx.Done():
 			}
-		}
-		if !available {
-			_ = stream.Send(&pb.DecryptReply{
-				Header: &pb.ReplyHeader{
-					Code: -1,
-					Msg:  "no available instance",
-				},
-				Data: &pb.DecryptData{
-					AdamId:      req.Data.AdamId,
-					Key:         req.Data.Key,
-					Sample:      req.Data.Sample,
-					SampleIndex: req.Data.SampleIndex,
-				},
-			})
-			continue
-		}
-		go WMDispatcher.Submit(&task)
-		result := <-task.Result
-		if result.Error != nil {
-			_ = stream.Send(&pb.DecryptReply{
-				Header: &pb.ReplyHeader{
-					Code: -1,
-					Msg:  result.Error.Error(),
-				},
-				Data: &pb.DecryptData{
-					AdamId:      req.Data.AdamId,
-					Key:         req.Data.Key,
-					Sample:      req.Data.Sample,
-					SampleIndex: req.Data.SampleIndex,
-				},
-			})
-		} else {
-			_ = stream.Send(&pb.DecryptReply{
-				Header: &pb.ReplyHeader{
-					Code: 0,
-					Msg:  "SUCCESS",
-				},
-				Data: &pb.DecryptData{
-					AdamId:      req.Data.AdamId,
-					Key:         req.Data.Key,
-					SampleIndex: req.Data.SampleIndex,
-					Sample:      result.Data,
-				},
-			})
-		}
+		}(req)
 	}
 }
 
@@ -245,7 +253,7 @@ func (s *server) M3U8(c context.Context, req *pb.M3U8Request) (*pb.M3U8Reply, er
 	} else {
 		log.Infof("m3u8 request from unknown peer")
 	}
-	instanceID, err := SelectInstance(req.Data.AdamId)
+	instance, err := GlobalManager.SelectInstance(req.Data.AdamId)
 	if err != nil {
 		return &pb.M3U8Reply{
 			Header: &pb.ReplyHeader{
@@ -254,7 +262,7 @@ func (s *server) M3U8(c context.Context, req *pb.M3U8Request) (*pb.M3U8Reply, er
 			},
 		}, nil
 	}
-	if instanceID == "" {
+	if instance == nil {
 		return &pb.M3U8Reply{
 			Header: &pb.ReplyHeader{
 				Code: -1,
@@ -262,7 +270,7 @@ func (s *server) M3U8(c context.Context, req *pb.M3U8Request) (*pb.M3U8Reply, er
 			},
 		}, nil
 	}
-	m3u8, err := GetM3U8(GetInstance(instanceID), req.Data.AdamId)
+	m3u8, err := GetM3U8(instance, req.Data.AdamId)
 	if err != nil {
 		return &pb.M3U8Reply{
 			Header: &pb.ReplyHeader{
@@ -298,15 +306,19 @@ func (s *server) Lyrics(c context.Context, req *pb.LyricsRequest) (*pb.LyricsRep
 	} else {
 		log.Infof("lyrics request from unknown peer")
 	}
-	var selectedInstanceId string
-	for _, instance := range Instances {
+
+	var selectedInstance *WrapperInstance
+	// Priority: Explicit region match in request
+	list := GlobalManager.List()
+	for _, instance := range list {
 		if strings.ToUpper(instance.Region) == strings.ToUpper(req.Data.Region) {
-			selectedInstanceId = instance.Id
+			selectedInstance = instance
+			break
 		}
 	}
-	if selectedInstanceId == "" {
-		selectedInstanceId = SelectInstanceForLyrics(req.Data.AdamId, req.Data.Language)
-		if selectedInstanceId == "" {
+	if selectedInstance == nil {
+		selectedInstance = GlobalManager.SelectInstanceForLyrics(req.Data.AdamId, req.Data.Language)
+		if selectedInstance == nil {
 			return &pb.LyricsReply{
 				Header: &pb.ReplyHeader{
 					Code: -1,
@@ -324,7 +336,7 @@ func (s *server) Lyrics(c context.Context, req *pb.LyricsRequest) (*pb.LyricsRep
 			},
 		}, nil
 	}
-	musicToken, err := GetMusicToken(GetInstance(selectedInstanceId))
+	musicToken, err := GetMusicToken(selectedInstance)
 	if err != nil {
 		return &pb.LyricsReply{
 			Header: &pb.ReplyHeader{
@@ -333,7 +345,7 @@ func (s *server) Lyrics(c context.Context, req *pb.LyricsRequest) (*pb.LyricsRep
 			},
 		}, nil
 	}
-	inst := GetInstance(selectedInstanceId)
+	inst := selectedInstance
 	lyrics, err := GetLyrics(req.Data.AdamId, inst.Region, req.Data.Language, token, musicToken)
 	if err != nil {
 		return &pb.LyricsReply{
@@ -362,7 +374,7 @@ func (s *server) WebPlayback(c context.Context, req *pb.WebPlaybackRequest) (*pb
 	} else {
 		log.Infof("webplayback request from unknown peer")
 	}
-	instanceID, err := SelectInstance(req.Data.AdamId)
+	instance, err := GlobalManager.SelectInstance(req.Data.AdamId)
 	if err != nil {
 		return &pb.WebPlaybackReply{
 			Header: &pb.ReplyHeader{
@@ -372,7 +384,7 @@ func (s *server) WebPlayback(c context.Context, req *pb.WebPlaybackRequest) (*pb
 			Data: nil,
 		}, nil
 	}
-	if instanceID == "" {
+	if instance == nil {
 		return &pb.WebPlaybackReply{
 			Header: &pb.ReplyHeader{
 				Code: -1,
@@ -391,7 +403,7 @@ func (s *server) WebPlayback(c context.Context, req *pb.WebPlaybackRequest) (*pb
 			Data: nil,
 		}, nil
 	}
-	musicToken, err := GetMusicToken(GetInstance(instanceID))
+	musicToken, err := GetMusicToken(instance)
 	if err != nil {
 		return &pb.WebPlaybackReply{
 			Header: &pb.ReplyHeader{
@@ -430,7 +442,7 @@ func (s *server) License(c context.Context, req *pb.LicenseRequest) (*pb.License
 	} else {
 		log.Infof("license request from unknown peer")
 	}
-	instanceID, err := SelectInstance(req.Data.AdamId)
+	instance, err := GlobalManager.SelectInstance(req.Data.AdamId)
 	if err != nil {
 		return &pb.LicenseReply{
 			Header: &pb.ReplyHeader{
@@ -440,7 +452,7 @@ func (s *server) License(c context.Context, req *pb.LicenseRequest) (*pb.License
 			Data: nil,
 		}, nil
 	}
-	if instanceID == "" {
+	if instance == nil {
 		return &pb.LicenseReply{
 			Header: &pb.ReplyHeader{
 				Code: -1,
@@ -459,7 +471,7 @@ func (s *server) License(c context.Context, req *pb.LicenseRequest) (*pb.License
 			Data: nil,
 		}, nil
 	}
-	musicToken, err := GetMusicToken(GetInstance(instanceID))
+	musicToken, err := GetMusicToken(instance)
 	if err != nil {
 		return &pb.LicenseReply{
 			Header: &pb.ReplyHeader{
@@ -524,7 +536,7 @@ func main() {
 
 	if _, err := os.Stat("data/wrapper/wrapper"); errors.Is(err, os.ErrNotExist) {
 		log.Warn("wrapper does not exist, downloading...")
-		err = os.MkdirAll("data/wrapper", 0777)
+		err = os.MkdirAll("data/wrapper", 0755)
 		if err != nil {
 			panic(err)
 		}
@@ -542,14 +554,15 @@ func main() {
 
 	WMDispatcher = NewDispatcher()
 
-	Instances = make([]*WrapperInstance, 0)
 	if _, err := os.Stat("data/instances.json"); !errors.Is(err, os.ErrNotExist) {
-		instancesInFile := LoadInstance()
-		ShouldStartInstances = len(instancesInFile)
-		for _, inst := range instancesInFile {
+		GlobalManager = LoadInstance()
+		list := GlobalManager.List()
+		ShouldStartInstances = len(list)
+		for _, inst := range list {
 			go WrapperStart(inst.Id)
 		}
 	} else {
+		GlobalManager = NewInstanceManager()
 		ShouldStartInstances = 0
 		Ready = true
 	}
@@ -563,5 +576,22 @@ func main() {
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterWrapperManagerServiceServer(grpcServer, newServer())
 	reflection.Register(grpcServer)
-	grpcServer.Serve(lis)
+
+	go func() {
+		log.Printf("wrapperManager running at %s:%d", *host, *port)
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Fatalf("failed to serve: %v", err)
+		}
+	}()
+
+	// Wait for interrupt signal to gracefully shutdown the server with
+	// a timeout of 5 seconds.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+	log.Println("Shutting down server...")
+
+	GlobalManager.StopAll()
+	grpcServer.GracefulStop()
+	log.Println("Server exiting")
 }

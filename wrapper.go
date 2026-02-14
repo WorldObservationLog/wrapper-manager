@@ -4,10 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"github.com/artdarek/go-unzip"
-	"github.com/creack/pty"
-	"github.com/gofrs/uuid/v5"
-	log "github.com/sirupsen/logrus"
 	"io"
 	"net/http"
 	"os"
@@ -15,6 +11,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/artdarek/go-unzip"
+	"github.com/creack/pty"
+	"github.com/gofrs/uuid/v5"
+	log "github.com/sirupsen/logrus"
 )
 
 func parseStorefrontID(id string) string {
@@ -59,7 +60,7 @@ func PrepareWrapper(mirror bool) {
 		if err != nil {
 			panic(err)
 		}
-		err = os.Chmod("data/wrapper/wrapper", 0777)
+		err = os.Chmod("data/wrapper/wrapper", 0755)
 		if err != nil {
 			panic(err)
 		}
@@ -68,7 +69,7 @@ func PrepareWrapper(mirror bool) {
 
 func WrapperInitial(account string, password string) {
 	id := uuid.NewV5(uuid.FromStringOrNil("77777777-7777-7777-7777-77777777"), account)
-	err := os.MkdirAll("data/wrapper/rootfs/data/instances/"+id.String(), 0777)
+	err := os.MkdirAll("data/wrapper/rootfs/data/instances/"+id.String(), 0755)
 	if err != nil {
 		panic(err)
 	}
@@ -180,30 +181,75 @@ func wrapperReady(instance *WrapperInstance) {
 		panic(err)
 	}
 	region := parseStorefrontID(string(storefrontID))
+	instance.Lock()
 	instance.Region = region
-	InsertInstance(instance)
-	WMDispatcher.AddInstance(instance)
+
+	// Initialize DecryptClient
+	client, err := NewDecryptClient(instance.DecryptPort)
+	if err != nil {
+		log.Errorf("failed to create decrypt client for instance %s: %v", instance.Id, err)
+		instance.Unlock()
+		return
+	}
+	instance.Client = client
+	instance.Ready = true
+	instance.Unlock()
+
+	GlobalManager.Add(instance)
+	// WMDispatcher.AddInstance(instance) // Removed
+
 	instance.NoRestart = false
 	go LoginDoneHandler(instance.Id)
 	log.Info(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), " Wrapper ready")
-	if len(Instances) == ShouldStartInstances {
+
+	// Check readiness
+	readyCount := 0
+	list := GlobalManager.List()
+	for _, inst := range list {
+		inst.Lock()
+		if inst.Ready {
+			readyCount++
+		}
+		inst.Unlock()
+	}
+	if readyCount == ShouldStartInstances {
 		Ready = true
 	}
 }
 
 func wrapperDown(instance *WrapperInstance) {
 	log.Info(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), " Wrapper Down")
-	RemoveInstance(instance)
-	WMDispatcher.RemoveInstance(instance.Id)
+
+	instance.Lock()
+	if instance.Client != nil {
+		instance.Client.Close()
+		instance.Client = nil
+	}
+	instance.Ready = false
+	instance.Unlock()
+
+	// Remove from manager? Or keep it but mark as not ready?
+	// Original logic removed it from Instances slice.
+	// But GlobalManager.Remove removes it from map.
+	// We should probably keep it if we plan to restart it.
+	// But InsertInstance used to append only if not exists.
+	// RemoveInstance removed it.
+	// If restarting, WrapperStart creates NEW WrapperInstance struct?
+	// WrapperStart(id) creates NEW WrapperInstance.
+	// So yes, we should remove the old one.
+
+	GlobalManager.Remove(instance.Id)
+	// WMDispatcher.RemoveInstance(instance.Id) // Removed
+
 	if !instance.NoRestart {
 		go WrapperStart(instance.Id)
 	} else {
-		SaveInstances()
+		GlobalManager.Save()
 	}
 }
 
 func KillWrapper(id string) error {
-	instance := GetInstance(id)
+	instance := GlobalManager.Get(id)
 	if instance == nil {
 		return fmt.Errorf("instance %s not found", id)
 	}
@@ -217,7 +263,7 @@ func KillWrapper(id string) error {
 }
 
 func provide2FACode(id string, code string) {
-	err := os.WriteFile("data/wrapper/rootfs/data/instances/"+id+"/2fa.txt", []byte(code), 0777)
+	err := os.WriteFile("data/wrapper/rootfs/data/instances/"+id+"/2fa.txt", []byte(code), 0644)
 	if err != nil {
 		panic(err)
 	}
@@ -266,9 +312,9 @@ func DownloadWrapperRelease(mirror bool) {
 	}
 	binary, err := io.ReadAll(wrapperResp.Body)
 	if runtime.GOARCH == "amd64" {
-		err = os.WriteFile("data/wrapper-x86_64.zip", binary, 0777)
+		err = os.WriteFile("data/wrapper-x86_64.zip", binary, 0644)
 	} else if runtime.GOARCH == "arm64" {
-		err = os.WriteFile("data/wrapper-arm64.zip", binary, 0777)
+		err = os.WriteFile("data/wrapper-arm64.zip", binary, 0644)
 	} else {
 		panic("unsupported arch")
 	}
@@ -284,7 +330,7 @@ func DownloadStorefrontIds() {
 		panic(err)
 	}
 	ids, err := io.ReadAll(resp.Body)
-	err = os.WriteFile("data/storefront_ids.json", ids, 0777)
+	err = os.WriteFile("data/storefront_ids.json", ids, 0644)
 	if err != nil {
 		panic(err)
 	}
@@ -294,8 +340,8 @@ func NoSubscriptionHandler(instance *WrapperInstance) {
 	if instance.NoRestart {
 		go LoginFailedHandler(instance.Id)
 	} else {
-		RemoveInstance(instance)
+		GlobalManager.Remove(instance.Id)
 		RemoveWrapperData(instance.Id)
-		SaveInstances()
+		GlobalManager.Save()
 	}
 }

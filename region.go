@@ -3,11 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"golang.org/x/sync/singleflight"
 	"io"
-	"math/rand"
 	"net/http"
 	"sync"
+
+	"golang.org/x/sync/singleflight"
 )
 
 var (
@@ -73,53 +73,4 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 	})
 
 	return val.(bool), err
-}
-
-func SelectInstance(adamId string) (string, error) {
-	var selectedInstances []string
-	for _, instance := range Instances {
-		available, err := checkAvailableOnRegion(adamId, instance.Region, false)
-		if err != nil {
-			return "", err
-		}
-		if available {
-			selectedInstances = append(selectedInstances, instance.Id)
-		}
-	}
-	if len(selectedInstances) == 0 {
-		for _, instance := range Instances {
-			available, err := checkAvailableOnRegion(adamId, instance.Region, false)
-			if err != nil {
-				return "", err
-			}
-			if available {
-				selectedInstances = append(selectedInstances, instance.Id)
-			}
-		}
-	}
-	if len(selectedInstances) != 0 {
-		return selectedInstances[rand.Intn(len(selectedInstances))], nil
-	}
-	return "", nil
-}
-
-func SelectInstanceForLyrics(adamId string, language string) string {
-	token, err := GetToken()
-	if err != nil {
-		return ""
-	}
-	var selectedInstances []string
-	for _, instance := range Instances {
-		musicToken, err := GetMusicToken(instance)
-		if err != nil {
-			return ""
-		}
-		if HasLyrics(adamId, instance.Region, language, token, musicToken) {
-			selectedInstances = append(selectedInstances, instance.Id)
-		}
-	}
-	if len(selectedInstances) != 0 {
-		return selectedInstances[rand.Intn(len(selectedInstances))]
-	}
-	return ""
 }
