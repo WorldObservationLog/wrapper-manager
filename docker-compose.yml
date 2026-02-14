@@ -7,10 +7,8 @@ services:
       "--port", "8080",
       "--mirror", "false"
     ]
+    restart: unless-stopped
     ports:
       - "8080:8080"
     volumes:
-      - data:/root/data
-      
-volumes:
-  data:
+      - ./data:/app/data

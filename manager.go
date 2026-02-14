@@ -65,7 +65,36 @@ func (m *InstanceManager) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile("data/instances.json", data, 0644)
+	return AtomicWriteFile("data/instances.json", data)
+}
+
+func AtomicWriteFile(filename string, data []byte) error {
+	f, err := os.CreateTemp("data", "instances-*.json")
+	if err != nil {
+		return err
+	}
+	tmpName := f.Name()
+	closed := false
+
+	defer func() {
+		if !closed {
+			f.Close()
+			os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	closed = true
+
+	return os.Rename(tmpName, filename)
 }
 
 func LoadInstance() *InstanceManager {

@@ -259,6 +259,9 @@ func wrapperDown(instance *WrapperInstance) {
 			log.Errorf("Wrapper %s crashed %d times in 1 minute, stopping restart", instance.Id, len(newCrashTimes))
 			// We don't restart, effectively stopping it.
 			// Should we alert user? logging error is good enough for now.
+
+			// Ensure we save the state (that the instance is removed/stopped)
+			GlobalManager.Save()
 			return
 		}
 
