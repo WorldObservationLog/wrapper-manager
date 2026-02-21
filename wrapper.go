@@ -316,6 +316,7 @@ func DownloadWrapperRelease(mirror bool) {
 	} else {
 		panic("unsupported arch")
 	}
+	defer resp.Body.Close()
 	buf := new(strings.Builder)
 	_, err := io.Copy(buf, resp.Body)
 	var info struct {
@@ -333,6 +334,7 @@ func DownloadWrapperRelease(mirror bool) {
 	if err != nil {
 		panic(err)
 	}
+	defer wrapperResp.Body.Close()
 	binary, err := io.ReadAll(wrapperResp.Body)
 	if runtime.GOARCH == "amd64" {
 		err = os.WriteFile("data/wrapper-x86_64.zip", binary, 0644)
@@ -352,6 +354,7 @@ func DownloadStorefrontIds() {
 	if err != nil {
 		panic(err)
 	}
+	defer resp.Body.Close()
 	ids, err := io.ReadAll(resp.Body)
 	err = os.WriteFile("data/storefront_ids.json", ids, 0644)
 	if err != nil {

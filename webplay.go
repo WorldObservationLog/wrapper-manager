@@ -25,6 +25,7 @@ func GetWebPlayback(adamId string, token string, musicToken string) (string, err
 	if err != nil {
 		return "", err
 	}
+	defer resp.Body.Close()
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
@@ -65,6 +66,7 @@ func GetLicense(adamId string, challenge string, uri string, token string, music
 	if err != nil {
 		return "", 0, err
 	}
+	defer resp.Body.Close()
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", 0, err

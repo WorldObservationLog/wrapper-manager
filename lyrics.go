@@ -22,12 +22,12 @@ func GetHttpClient() *http.Client {
 }
 
 type LyricResponse struct {
-    Errors []interface{} `json:"errors"`
-    Data   []struct {
-        Attributes struct {
-            TtmlLocalizations string `json:"ttmlLocalizations"`
-        } `json:"attributes"`
-    } `json:"data"`
+	Errors []interface{} `json:"errors"`
+	Data   []struct {
+		Attributes struct {
+			TtmlLocalizations string `json:"ttmlLocalizations"`
+		} `json:"attributes"`
+	} `json:"data"`
 }
 
 func GetLyrics(adamID string, region string, language string, token string, musicToken string) (string, error) {
@@ -43,6 +43,7 @@ func GetLyrics(adamID string, region string, language string, token string, musi
 	if err != nil {
 		return "", err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		return "", errors.New(fmt.Sprintf("failed to get lyrics: %d", resp.StatusCode))
 	}
@@ -80,6 +81,7 @@ func HasLyrics(adamID string, region string, language string, token string, musi
 	if err != nil {
 		return false
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		return false
 	}

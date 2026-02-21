@@ -53,6 +53,7 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 		if err != nil {
 			return false, err
 		}
+		defer resp.Body.Close()
 
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
