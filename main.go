@@ -12,7 +12,6 @@ import (
 	"os/user"
 	"slices"
 	"strings"
-	"sync"
 	"syscall"
 
 	pb "github.com/WorldObservationLog/wrapper-manager/proto"
@@ -148,30 +147,6 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 		log.Infof("decrypt stream from unknown peer")
 	}
 
-	responses := make(chan *pb.DecryptReply, 100)
-	ctx := stream.Context()
-	var wg sync.WaitGroup
-
-	// Send Loop
-	sendErr := make(chan error, 1)
-	go func() {
-		defer close(sendErr)
-		for resp := range responses {
-			if err := stream.Send(resp); err != nil {
-				sendErr <- err
-				return
-			}
-		}
-	}()
-
-	// Wait for all workers to finish then close responses channel to stop sender
-	defer func() {
-		wg.Wait()
-		close(responses)
-		// Ensure we don't return until sender is done (optional, but good for cleanup)
-		<-sendErr
-	}()
-
 	for {
 		req, err := stream.Recv()
 		if err == io.EOF {
@@ -181,68 +156,54 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 			return err
 		}
 
-		// Check if send loop failed
-		select {
-		case err := <-sendErr:
-			return err
-		default:
-		}
-
 		if req.Data.AdamId == "KEEPALIVE" {
-			select {
-			case responses <- &pb.DecryptReply{
+			err = stream.Send(&pb.DecryptReply{
 				Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"},
 				Data:   &pb.DecryptData{AdamId: "KEEPALIVE"},
-			}:
-			case <-ctx.Done():
-				return ctx.Err()
+			})
+			if err != nil {
+				return err
 			}
 			continue
 		}
 
-		wg.Add(1)
-		go func(r *pb.DecryptRequest) {
-			defer wg.Done()
+		task := Task{
+			AdamId:  req.Data.AdamId,
+			Key:     req.Data.Key,
+			Payload: req.Data.Sample,
+			Result:  make(chan *Result, 1),
+		}
 
-			task := Task{
-				AdamId:  r.Data.AdamId,
-				Key:     r.Data.Key,
-				Payload: r.Data.Sample,
-				Result:  make(chan *Result, 1),
+		// We rely on WMDispatcher.Submit -> GlobalManager.SelectInstance for availability checking.
+		WMDispatcher.Submit(&task)
+		result := <-task.Result
+
+		var reply *pb.DecryptReply
+		if result.Error != nil {
+			reply = &pb.DecryptReply{
+				Header: &pb.ReplyHeader{Code: -1, Msg: result.Error.Error()},
+				Data: &pb.DecryptData{
+					AdamId:      req.Data.AdamId,
+					Key:         req.Data.Key,
+					Sample:      req.Data.Sample,
+					SampleIndex: req.Data.SampleIndex,
+				},
 			}
-
-			// We rely on WMDispatcher.Submit -> GlobalManager.SelectInstance for availability checking.
-			WMDispatcher.Submit(&task)
-			result := <-task.Result
-
-			var reply *pb.DecryptReply
-			if result.Error != nil {
-				reply = &pb.DecryptReply{
-					Header: &pb.ReplyHeader{Code: -1, Msg: result.Error.Error()},
-					Data: &pb.DecryptData{
-						AdamId:      r.Data.AdamId,
-						Key:         r.Data.Key,
-						Sample:      r.Data.Sample,
-						SampleIndex: r.Data.SampleIndex,
-					},
-				}
-			} else {
-				reply = &pb.DecryptReply{
-					Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"},
-					Data: &pb.DecryptData{
-						AdamId:      r.Data.AdamId,
-						Key:         r.Data.Key,
-						SampleIndex: r.Data.SampleIndex,
-						Sample:      result.Data,
-					},
-				}
+		} else {
+			reply = &pb.DecryptReply{
+				Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"},
+				Data: &pb.DecryptData{
+					AdamId:      req.Data.AdamId,
+					Key:         req.Data.Key,
+					SampleIndex: req.Data.SampleIndex,
+					Sample:      result.Data,
+				},
 			}
+		}
 
-			select {
-			case responses <- reply:
-			case <-ctx.Done():
-			}
-		}(req)
+		if err := stream.Send(reply); err != nil {
+			return err
+		}
 	}
 }
 
