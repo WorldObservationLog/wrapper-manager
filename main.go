@@ -233,6 +233,7 @@ func (s *server) M3U8(c context.Context, req *pb.M3U8Request) (*pb.M3U8Reply, er
 	}
 	m3u8, err := GetM3U8(instance, req.Data.AdamId)
 	if err != nil {
+		GlobalManager.ReportFailure(req.Data.AdamId, instance.Id)
 		return &pb.M3U8Reply{
 			Header: &pb.ReplyHeader{
 				Code: -1,
@@ -241,6 +242,7 @@ func (s *server) M3U8(c context.Context, req *pb.M3U8Request) (*pb.M3U8Reply, er
 		}, nil
 	}
 	if m3u8 == "" {
+		GlobalManager.ReportFailure(req.Data.AdamId, instance.Id)
 		return &pb.M3U8Reply{
 			Header: &pb.ReplyHeader{
 				Code: -1,

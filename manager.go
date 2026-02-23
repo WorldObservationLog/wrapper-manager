@@ -6,20 +6,24 @@ import (
 	"math/rand"
 	"os"
 	"sync"
+	"time"
 )
 
 var GlobalManager *InstanceManager
 
 type InstanceManager struct {
-	instances map[string]*WrapperInstance
-	mu        sync.RWMutex
-	shutdown  bool
+	instances      map[string]*WrapperInstance
+	failedRecords  map[string]map[string]time.Time // adamId -> instanceId -> latest failed time
+	mu             sync.RWMutex
+	failedRecordMu sync.RWMutex
+	shutdown       bool
 }
 
 func NewInstanceManager() *InstanceManager {
 	return &InstanceManager{
-		instances: make(map[string]*WrapperInstance),
-		shutdown:  false,
+		instances:     make(map[string]*WrapperInstance),
+		failedRecords: make(map[string]map[string]time.Time),
+		shutdown:      false,
 	}
 }
 
@@ -117,6 +121,34 @@ func LoadInstance() *InstanceManager {
 	return manager
 }
 
+func (m *InstanceManager) ReportFailure(adamId string, instanceId string) {
+	m.failedRecordMu.Lock()
+	defer m.failedRecordMu.Unlock()
+	if _, ok := m.failedRecords[adamId]; !ok {
+		m.failedRecords[adamId] = make(map[string]time.Time)
+	}
+	m.failedRecords[adamId][instanceId] = time.Now()
+}
+
+func (m *InstanceManager) getFailedInstanceIds(adamId string, d time.Duration) map[string]bool {
+	m.failedRecordMu.RLock()
+	defer m.failedRecordMu.RUnlock()
+
+	res := make(map[string]bool)
+	records, ok := m.failedRecords[adamId]
+	if !ok {
+		return res
+	}
+
+	now := time.Now()
+	for instId, failureTime := range records {
+		if now.Sub(failureTime) < d {
+			res[instId] = true
+		}
+	}
+	return res
+}
+
 func (m *InstanceManager) SelectInstance(adamId string) (*WrapperInstance, error) {
 	// Snapshot instances to minimize lock holding time
 	m.mu.RLock()
@@ -126,9 +158,16 @@ func (m *InstanceManager) SelectInstance(adamId string) (*WrapperInstance, error
 	}
 	m.mu.RUnlock()
 
+	// 0. Get recently failed instances (e.g., failed within the last 10 minutes)
+	failedInstanceIds := m.getFailedInstanceIds(adamId, 10*time.Minute)
+
 	// 1. Stickiness check (fast, no network)
 	for _, inst := range instancesSnapshot {
 		if inst.Client != nil && inst.Client.GetLastAdamId() == adamId {
+			// Skip sticky instance if it recently failed
+			if failedInstanceIds[inst.Id] {
+				continue
+			}
 			return inst, nil
 		}
 	}
@@ -166,7 +205,8 @@ func (m *InstanceManager) SelectInstance(adamId string) (*WrapperInstance, error
 		close(candidatesChan)
 	}()
 
-	var candidates []*WrapperInstance
+	var goodCandidates []*WrapperInstance
+	var failedCandidates []*WrapperInstance
 	var lastErr error
 
 	for res := range candidatesChan {
@@ -175,19 +215,26 @@ func (m *InstanceManager) SelectInstance(adamId string) (*WrapperInstance, error
 			continue
 		}
 		if res.inst != nil {
-			if res.inst.Client != nil && res.inst.Client.GetLastAdamId() == "" {
-				// Found an idle instance, return immediately?
-				// In parallel execution, we might get this later than others.
-				// Let's collect all and prioritize later, or return first idle found?
-				// Returning first idle found is faster.
+			if res.inst.Client != nil && res.inst.Client.GetLastAdamId() == "" && !failedInstanceIds[res.inst.Id] {
+				// Found an idle AND not recently failed instance, return immediately
 				return res.inst, nil
 			}
-			candidates = append(candidates, res.inst)
+			if failedInstanceIds[res.inst.Id] {
+				failedCandidates = append(failedCandidates, res.inst)
+			} else {
+				goodCandidates = append(goodCandidates, res.inst)
+			}
 		}
 	}
 
-	if len(candidates) > 0 {
-		return candidates[rand.Intn(len(candidates))], nil
+	if len(goodCandidates) > 0 {
+		return goodCandidates[rand.Intn(len(goodCandidates))], nil
+	}
+
+	// fallback: if all candidates recently failed, we still try to return one from them
+	// rather than returning nil, which would completely halt processing.
+	if len(failedCandidates) > 0 {
+		return failedCandidates[rand.Intn(len(failedCandidates))], nil
 	}
 
 	if lastErr != nil {
