@@ -161,87 +161,164 @@ func (m *InstanceManager) SelectInstance(adamId string) (*WrapperInstance, error
 	// 0. Get recently failed instances (e.g., failed within the last 10 minutes)
 	failedInstanceIds := m.getFailedInstanceIds(adamId, 10*time.Minute)
 
-	// 1. Stickiness check (fast, no network)
+	// Filter out instances that are not ready or are completely unhealthy
+	var validSnapshot []*WrapperInstance
 	for _, inst := range instancesSnapshot {
-		if inst.Client != nil && inst.Client.GetLastAdamId() == adamId {
-			// Skip sticky instance if it recently failed
-			if failedInstanceIds[inst.Id] {
-				continue
-			}
-			return inst, nil
+		inst.Lock()
+		ready := inst.Ready
+		client := inst.Client
+		inst.Unlock()
+
+		if ready && client != nil && !inst.IsUnhealthy() {
+			validSnapshot = append(validSnapshot, inst)
 		}
 	}
 
-	// 2. Region availability check (parallel)
-	type result struct {
-		inst *WrapperInstance
-		err  error
+	if len(validSnapshot) == 0 {
+		return nil, fmt.Errorf("no healthy and ready instances available")
 	}
 
-	candidatesChan := make(chan result, len(instancesSnapshot))
-	var wg sync.WaitGroup
+	// Calculate scores for all valid candidates
+	const MaxQueueThreshold = 3
 
-	for _, inst := range instancesSnapshot {
-		wg.Add(1)
-		go func(instance *WrapperInstance) {
-			defer wg.Done()
-			available, err := checkAvailableOnRegion(adamId, instance.Region, false)
-			if err != nil {
-				// Log error but don't fail the whole selection?
-				// Original logic returned error immediately.
-				// Let's keep consistent: if any fails, we might miss it, but returning error from parallel is tricky.
-				// We'll collect errors, but prioritize available instances.
-				candidatesChan <- result{inst: nil, err: err}
-				return
-			}
-			if available {
-				candidatesChan <- result{inst: instance, err: nil}
-			}
-		}(inst)
+	type candidate struct {
+		inst  *WrapperInstance
+		score int
 	}
 
-	go func() {
-		wg.Wait()
-		close(candidatesChan)
-	}()
+	var candidates []candidate
 
-	var goodCandidates []*WrapperInstance
-	var failedCandidates []*WrapperInstance
-	var lastErr error
+	for _, inst := range validSnapshot {
+		client := inst.Client
+		activeTasks := client.GetActiveTasks()
+		targetAdamId := client.GetTargetAdamId()
+		healthPenalty := inst.CalculateHealthPenalty()
 
-	for res := range candidatesChan {
-		if res.err != nil {
-			lastErr = res.err
-			continue
+		score := int(activeTasks) * 100
+		score += healthPenalty
+
+		if failedInstanceIds[inst.Id] {
+			score += 50000 // Heavy penalty for recently failed this adamId, but not a hard block if it's the only one left
 		}
-		if res.inst != nil {
-			if res.inst.Client != nil && res.inst.Client.GetLastAdamId() == "" && !failedInstanceIds[res.inst.Id] {
-				// Found an idle AND not recently failed instance, return immediately
-				return res.inst, nil
-			}
-			if failedInstanceIds[res.inst.Id] {
-				failedCandidates = append(failedCandidates, res.inst)
-			} else {
-				goodCandidates = append(goodCandidates, res.inst)
-			}
+
+		if targetAdamId == adamId {
+			// Affinity (Bonus: 0 extra penalty)
+			score += 0
+		} else if targetAdamId == "" {
+			// Idle (Spillover penalty)
+			// Base idle penalty is MaxQueueThreshold * 100.
+			// This means an idle instance will only be cheaper if affinity instances have >= MaxQueueThreshold active tasks.
+			score += MaxQueueThreshold * 100
+		} else {
+			// Alien (occupied by another task)
+			score += 999999 // Very heavy penalty
+		}
+
+		candidates = append(candidates, candidate{inst: inst, score: score})
+	}
+
+	// Find the minimum score
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no valid candidates after scoring")
+	}
+
+	bestCandidate := candidates[0]
+	for _, c := range candidates[1:] {
+		if c.score < bestCandidate.score {
+			bestCandidate = c
 		}
 	}
 
-	if len(goodCandidates) > 0 {
-		return goodCandidates[rand.Intn(len(goodCandidates))], nil
+	selectedInst := bestCandidate.inst
+
+	// 1. Stickiness / Region fast check
+	// We still need to ensure the region supports it if we are switching its context or if it's the first time
+	// If it's already serving this adamId, region was already verified.
+	if selectedInst.Client.GetTargetAdamId() != adamId {
+		available, err := checkAvailableOnRegion(adamId, selectedInst.Region, false)
+		if err != nil {
+			return nil, err
+		}
+		if !available {
+			// If the best candidate's region doesn't support it, we must fall back to parallel scanning
+			// For simplicity and to avoid cascading failures on the fast path, we do a parallel scan of valid candidates
+
+			type regResult struct {
+				inst *WrapperInstance
+				err  error
+			}
+			candidatesChan := make(chan regResult, len(validSnapshot))
+			var wg sync.WaitGroup
+			for _, inst := range validSnapshot {
+				wg.Add(1)
+				go func(instance *WrapperInstance) {
+					defer wg.Done()
+					avail, err := checkAvailableOnRegion(adamId, instance.Region, false)
+					if err != nil {
+						candidatesChan <- regResult{inst: nil, err: err}
+						return
+					}
+					if avail {
+						candidatesChan <- regResult{inst: instance, err: nil}
+					}
+				}(inst)
+			}
+			go func() {
+				wg.Wait()
+				close(candidatesChan)
+			}()
+
+			var availableCandidates []*WrapperInstance
+			var lastErr error
+			for res := range candidatesChan {
+				if res.err != nil {
+					lastErr = res.err
+					continue
+				}
+				if res.inst != nil {
+					availableCandidates = append(availableCandidates, res.inst)
+				}
+			}
+
+			if len(availableCandidates) == 0 {
+				if lastErr != nil {
+					return nil, lastErr
+				}
+				return nil, nil // None available in region
+			}
+
+			// Rescore the filtered available instances
+			bestCandidate = candidate{score: 2147483647} // Max int
+			for _, inst := range availableCandidates {
+				client := inst.Client
+				active := client.GetActiveTasks()
+				tId := client.GetTargetAdamId()
+				hPenalty := inst.CalculateHealthPenalty()
+
+				s := int(active)*100 + hPenalty
+				if failedInstanceIds[inst.Id] {
+					s += 50000
+				}
+				if tId == adamId {
+					s += 0
+				} else if tId == "" {
+					s += MaxQueueThreshold * 100
+				} else {
+					s += 999999
+				}
+
+				if s < bestCandidate.score {
+					bestCandidate = candidate{inst: inst, score: s}
+				}
+			}
+			selectedInst = bestCandidate.inst
+		}
 	}
 
-	// fallback: if all candidates recently failed, we still try to return one from them
-	// rather than returning nil, which would completely halt processing.
-	if len(failedCandidates) > 0 {
-		return failedCandidates[rand.Intn(len(failedCandidates))], nil
-	}
+	// 3. Declare intention before returning to prevent concurrency storms
+	selectedInst.Client.SetTargetAdamId(adamId)
 
-	if lastErr != nil {
-		return nil, lastErr
-	}
-
-	return nil, nil
+	return selectedInst, nil
 }
 
 func (m *InstanceManager) SelectInstanceForLyrics(adamId string, language string) *WrapperInstance {

@@ -167,10 +167,14 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 			continue
 		}
 
+		// 致命问题隔离：避免底层 gRPC 流的数组发生内存重叠
+		safePayload := make([]byte, len(req.Data.Sample))
+		copy(safePayload, req.Data.Sample)
+
 		task := Task{
 			AdamId:  req.Data.AdamId,
 			Key:     req.Data.Key,
-			Payload: req.Data.Sample,
+			Payload: safePayload,
 			Result:  make(chan *Result, 1),
 		}
 

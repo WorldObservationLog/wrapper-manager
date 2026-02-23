@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -25,6 +26,12 @@ type DecryptClient struct {
 	LastAdamId     string
 	LastKey        string
 	LastHandleTime time.Time
+
+	// Spooling and load balancing
+	activeTasks  atomic.Int32
+	targetAdamId string
+	targetMu     sync.RWMutex
+	isBroken     atomic.Bool
 }
 
 func NewDecryptClient(port int) (*DecryptClient, error) {
@@ -45,11 +52,25 @@ func NewDecryptClient(port int) (*DecryptClient, error) {
 func (d *DecryptClient) Close() {
 	d.connMu.Lock()
 	defer d.connMu.Unlock()
+	d.isBroken.Store(true)
 	if d.conn != nil {
 		err := d.conn.Close()
 		if err != nil {
 			logrus.Errorf("failed to close client conn: %s", err)
 		}
+	}
+}
+
+// markBroken 由于网络错误引发物理断连，防止留存脏数据污染下一个请求
+func (d *DecryptClient) markBroken(cause error) {
+	if d.isBroken.CompareAndSwap(false, true) {
+		logrus.Errorf("DecryptClient marked broken due to network error: %v", cause)
+
+		d.connMu.Lock()
+		if d.conn != nil {
+			_ = d.conn.Close()
+		}
+		d.connMu.Unlock()
 	}
 }
 
@@ -59,13 +80,40 @@ func (d *DecryptClient) GetLastAdamId() string {
 	return d.LastAdamId
 }
 
+func (d *DecryptClient) GetActiveTasks() int32 {
+	return d.activeTasks.Load()
+}
+
+func (d *DecryptClient) GetTargetAdamId() string {
+	d.targetMu.RLock()
+	defer d.targetMu.RUnlock()
+	return d.targetAdamId
+}
+
+func (d *DecryptClient) SetTargetAdamId(adamId string) {
+	d.targetMu.Lock()
+	defer d.targetMu.Unlock()
+	d.targetAdamId = adamId
+}
+
 func (d *DecryptClient) GetLastHandleTime() time.Time {
 	d.stateMu.RLock()
 	defer d.stateMu.RUnlock()
 	return d.LastHandleTime
 }
 
-func (d *DecryptClient) Process(task *Task) {
+func (d *DecryptClient) IsBroken() bool {
+	return d.isBroken.Load()
+}
+
+func (d *DecryptClient) Process(adamId string, key string, payload []byte) ([]byte, error) {
+	d.activeTasks.Add(1)
+	defer d.activeTasks.Add(-1)
+
+	if d.IsBroken() {
+		return nil, fmt.Errorf("client is broken due to previous network error")
+	}
+
 	d.connMu.Lock()
 	defer d.connMu.Unlock()
 
@@ -74,33 +122,19 @@ func (d *DecryptClient) Process(task *Task) {
 	currentLastKey := d.LastKey
 	d.stateMu.Unlock()
 
-	if currentLastKey == "" || currentLastKey != task.Key {
-		err := d.switchContext(task.AdamId, task.Key)
+	if currentLastKey == "" || currentLastKey != key {
+		err := d.switchContext(adamId, key)
 		if err != nil {
-			// d.Unavailable() // Removed, responsibility of WrapperInstance
-			task.Result <- &Result{
-				Success: false,
-				Data:    task.Payload,
-				Error:   err,
-			}
-			return
+			d.markBroken(fmt.Errorf("switchContext failed: %w", err))
+			return nil, err
 		}
 	}
-	result, err := d.decrypt(task.Payload)
+	result, err := d.decrypt(payload)
 	if err != nil {
-		// d.Unavailable() // Removed
-		task.Result <- &Result{
-			Success: false,
-			Data:    task.Payload,
-			Error:   err,
-		}
-		return
+		d.markBroken(fmt.Errorf("decrypt failed: %w", err))
+		return nil, err
 	}
-	task.Result <- &Result{
-		Success: true,
-		Data:    result,
-		Error:   nil,
-	}
+	return result, nil
 }
 
 func (d *DecryptClient) decrypt(sample []byte) ([]byte, error) {
