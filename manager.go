@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,6 +14,7 @@ var GlobalManager *InstanceManager
 
 type InstanceManager struct {
 	instances      map[string]*WrapperInstance
+	instancesCache atomic.Value                    // 存储 []*WrapperInstance 实现无锁读取
 	failedRecords  map[string]map[string]time.Time // adamId -> instanceId -> latest failed time
 	mu             sync.RWMutex
 	failedRecordMu sync.RWMutex
@@ -20,23 +22,36 @@ type InstanceManager struct {
 }
 
 func NewInstanceManager() *InstanceManager {
-	return &InstanceManager{
+	m := &InstanceManager{
 		instances:     make(map[string]*WrapperInstance),
 		failedRecords: make(map[string]map[string]time.Time),
 		shutdown:      false,
 	}
+	m.instancesCache.Store(make([]*WrapperInstance, 0))
+	return m
+}
+
+// updateCache 必须在持有 mu.Lock() 或单核初始化时调用
+func (m *InstanceManager) updateCache() {
+	list := make([]*WrapperInstance, 0, len(m.instances))
+	for _, inst := range m.instances {
+		list = append(list, inst)
+	}
+	m.instancesCache.Store(list)
 }
 
 func (m *InstanceManager) Add(inst *WrapperInstance) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.instances[inst.Id] = inst
+	m.updateCache()
 }
 
 func (m *InstanceManager) Remove(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.instances, id)
+	m.updateCache()
 }
 
 func (m *InstanceManager) Get(id string) *WrapperInstance {
@@ -46,13 +61,11 @@ func (m *InstanceManager) Get(id string) *WrapperInstance {
 }
 
 func (m *InstanceManager) List() []*WrapperInstance {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	list := make([]*WrapperInstance, 0, len(m.instances))
-	for _, inst := range m.instances {
-		list = append(list, inst)
+	cached := m.instancesCache.Load()
+	if cached == nil {
+		return []*WrapperInstance{}
 	}
-	return list
+	return cached.([]*WrapperInstance)
 }
 
 func (m *InstanceManager) Save() error {
@@ -118,6 +131,7 @@ func LoadInstance() *InstanceManager {
 	for _, inst := range instances {
 		manager.instances[inst.Id] = inst
 	}
+	manager.updateCache()
 	return manager
 }
 
@@ -150,13 +164,8 @@ func (m *InstanceManager) getFailedInstanceIds(adamId string, d time.Duration) m
 }
 
 func (m *InstanceManager) SelectInstance(adamId string) (*WrapperInstance, error) {
-	// Snapshot instances to minimize lock holding time
-	m.mu.RLock()
-	instancesSnapshot := make([]*WrapperInstance, 0, len(m.instances))
-	for _, inst := range m.instances {
-		instancesSnapshot = append(instancesSnapshot, inst)
-	}
-	m.mu.RUnlock()
+	// Snapshot instances via O(1) lock-free atomic read
+	instancesSnapshot := m.instancesCache.Load().([]*WrapperInstance)
 
 	// 0. Get recently failed instances (e.g., failed within the last 10 minutes)
 	failedInstanceIds := m.getFailedInstanceIds(adamId, 10*time.Minute)
@@ -347,13 +356,8 @@ func (m *InstanceManager) SelectInstanceForLyrics(adamId string, language string
 		return nil
 	}
 
-	// Snapshot instances
-	m.mu.RLock()
-	instancesSnapshot := make([]*WrapperInstance, 0, len(m.instances))
-	for _, inst := range m.instances {
-		instancesSnapshot = append(instancesSnapshot, inst)
-	}
-	m.mu.RUnlock()
+	// Snapshot instances via lock-free cache
+	instancesSnapshot := m.instancesCache.Load().([]*WrapperInstance)
 
 	candidatesChan := make(chan *WrapperInstance, len(instancesSnapshot))
 	var wg sync.WaitGroup

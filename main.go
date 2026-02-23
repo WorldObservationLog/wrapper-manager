@@ -12,7 +12,9 @@ import (
 	"os/user"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	pb "github.com/WorldObservationLog/wrapper-manager/proto"
 	"github.com/gofrs/uuid/v5"
@@ -28,6 +30,8 @@ var (
 	DeviceInfo           string
 	Ready                bool
 	ShouldStartInstances int
+	decryptBytes         atomic.Uint64
+	decryptCount         atomic.Uint64
 )
 
 type server struct {
@@ -194,6 +198,8 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 				},
 			}
 		} else {
+			decryptBytes.Add(uint64(len(req.Data.Sample)))
+			decryptCount.Add(1)
 			reply = &pb.DecryptReply{
 				Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"},
 				Data: &pb.DecryptData{
@@ -518,6 +524,19 @@ func main() {
 	if *prepare {
 		os.Exit(0)
 	}
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			bytesC := decryptBytes.Swap(0)
+			countC := decryptCount.Swap(0)
+			if countC > 0 {
+				speedMB := float64(bytesC) / 1024.0 / 1024.0 / 5.0
+				log.Infof("Decryption Speed: %.2f MB/s | %d samples processed in last 5s (%.1f req/s)", speedMB, countC, float64(countC)/5.0)
+			}
+		}
+	}()
 
 	WMDispatcher = NewDispatcher()
 
