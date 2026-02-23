@@ -161,6 +161,26 @@ func (m *InstanceManager) SelectInstance(adamId string) (*WrapperInstance, error
 	// 0. Get recently failed instances (e.g., failed within the last 10 minutes)
 	failedInstanceIds := m.getFailedInstanceIds(adamId, 10*time.Minute)
 
+	// 1. FAST PATH: Stickiness check (affinity)
+	// 本地直达查表：这是恢复 20MB/s 极速解密性能的核心。
+	// 大量并发流媒体请求时，免去数千次的 `HealthPenalty` `SelectInstance` O(N) 遍历以及锁争抢。
+	// 如果实例健康、没坏、并且上一次接待的就是这个目标 adamId，它将具备绝对最高优先级（且不限制排队数量，直接在内存排队）。
+	for _, inst := range instancesSnapshot {
+		inst.Lock()
+		ready := inst.Ready
+		client := inst.Client
+		inst.Unlock()
+
+		if ready && client != nil && !client.IsBroken() {
+			if client.GetTargetAdamId() == adamId {
+				if !failedInstanceIds[inst.Id] && !inst.IsUnhealthy() {
+					// 命中缓存，直接放行，吞吐量提升至满带宽。
+					return inst, nil
+				}
+			}
+		}
+	}
+
 	// Filter out instances that are not ready or are completely unhealthy
 	var validSnapshot []*WrapperInstance
 	for _, inst := range instancesSnapshot {
