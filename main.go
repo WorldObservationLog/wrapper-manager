@@ -12,6 +12,7 @@ import (
 	"os/user"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -151,6 +152,9 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 		log.Infof("decrypt stream from unknown peer")
 	}
 
+	// 并发写保护：在一个 gRPC stream 内允许多个 goroutine 归还结果时，必须锁定以防止帧交错损坏。
+	var sendMu sync.Mutex
+
 	for {
 		req, err := stream.Recv()
 		if err == io.EOF {
@@ -182,38 +186,43 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 			Result:  make(chan *Result, 1),
 		}
 
-		// We rely on WMDispatcher.Submit -> GlobalManager.SelectInstance for availability checking.
-		WMDispatcher.Submit(&task)
-		result := <-task.Result
+		// 将整个解密等待环节异步抛出，解放 gRPC 主 Recv() 循环的超高并发。
+		go func(task Task, req *pb.DecryptRequest) {
+			WMDispatcher.Submit(&task)
+			result := <-task.Result
 
-		var reply *pb.DecryptReply
-		if result.Error != nil {
-			reply = &pb.DecryptReply{
-				Header: &pb.ReplyHeader{Code: -1, Msg: result.Error.Error()},
-				Data: &pb.DecryptData{
-					AdamId:      req.Data.AdamId,
-					Key:         req.Data.Key,
-					Sample:      req.Data.Sample,
-					SampleIndex: req.Data.SampleIndex,
-				},
+			var reply *pb.DecryptReply
+			if result.Error != nil {
+				reply = &pb.DecryptReply{
+					Header: &pb.ReplyHeader{Code: -1, Msg: result.Error.Error()},
+					Data: &pb.DecryptData{
+						AdamId:      req.Data.AdamId,
+						Key:         req.Data.Key,
+						Sample:      req.Data.Sample,
+						SampleIndex: req.Data.SampleIndex,
+					},
+				}
+			} else {
+				decryptBytes.Add(uint64(len(req.Data.Sample)))
+				decryptCount.Add(1)
+				reply = &pb.DecryptReply{
+					Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"},
+					Data: &pb.DecryptData{
+						AdamId:      req.Data.AdamId,
+						Key:         req.Data.Key,
+						SampleIndex: req.Data.SampleIndex,
+						Sample:      result.Data,
+					},
+				}
 			}
-		} else {
-			decryptBytes.Add(uint64(len(req.Data.Sample)))
-			decryptCount.Add(1)
-			reply = &pb.DecryptReply{
-				Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"},
-				Data: &pb.DecryptData{
-					AdamId:      req.Data.AdamId,
-					Key:         req.Data.Key,
-					SampleIndex: req.Data.SampleIndex,
-					Sample:      result.Data,
-				},
-			}
-		}
 
-		if err := stream.Send(reply); err != nil {
-			return err
-		}
+			// 写回给客户端的隧道受全局单锁保护
+			sendMu.Lock()
+			if err := stream.Send(reply); err != nil {
+				log.Errorf("failed to send decrypt reply to %s: %v", req.Data.AdamId, err)
+			}
+			sendMu.Unlock()
+		}(task, req)
 	}
 }
 
