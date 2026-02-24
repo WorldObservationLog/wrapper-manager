@@ -7,18 +7,35 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
+	"time"
+)
+
+var (
+	globalHttpClient *http.Client
+	httpClientOnce   sync.Once
 )
 
 func GetHttpClient() *http.Client {
-	if PROXY == "" {
-		return http.DefaultClient
-	}
-	proxyUrl, err := url.Parse(PROXY)
-	if err != nil {
-		panic("Invalid proxy URL: " + PROXY)
-	}
-	transport := &http.Transport{Proxy: http.ProxyURL(proxyUrl)}
-	return &http.Client{Transport: transport}
+	httpClientOnce.Do(func() {
+		if PROXY == "" {
+			globalHttpClient = http.DefaultClient
+		} else {
+			proxyUrl, err := url.Parse(PROXY)
+			if err != nil {
+				panic("Invalid proxy URL: " + PROXY)
+			}
+			transport := &http.Transport{
+				Proxy: http.ProxyURL(proxyUrl),
+				// Configure connection pool settings for high concurrency
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 100,
+				IdleConnTimeout:     90 * time.Second,
+			}
+			globalHttpClient = &http.Client{Transport: transport}
+		}
+	})
+	return globalHttpClient
 }
 
 type LyricResponse struct {

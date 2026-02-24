@@ -11,10 +11,11 @@ type Dispatcher struct {
 }
 
 type Task struct {
-	AdamId  string
-	Key     string
-	Payload []byte
-	Result  chan *Result
+	AdamId      string
+	Key         string
+	SampleIndex int32
+	Payload     []byte
+	Result      chan *Result
 }
 
 type Result struct {
@@ -40,7 +41,7 @@ func (d *Dispatcher) Submit(task *Task) {
 	var lastErr error
 
 	for i := 0; i < maxRetries; i++ {
-		inst, err := GlobalManager.SelectInstance(task.AdamId)
+		inst, err := GlobalManager.SelectInstance(task.AdamId, task.Key)
 		if err != nil {
 			lastErr = err
 			// It's possible there are no instances available *yet* (e.g. all restarting)

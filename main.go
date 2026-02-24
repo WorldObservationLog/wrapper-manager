@@ -180,14 +180,15 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 		copy(safePayload, req.Data.Sample)
 
 		task := Task{
-			AdamId:  req.Data.AdamId,
-			Key:     req.Data.Key,
-			Payload: safePayload,
-			Result:  make(chan *Result, 1),
+			AdamId:      req.Data.AdamId,
+			Key:         req.Data.Key,
+			SampleIndex: req.Data.SampleIndex,
+			Payload:     safePayload,
+			Result:      make(chan *Result, 1),
 		}
 
 		// 将整个解密等待环节异步抛出，解放 gRPC 主 Recv() 循环的超高并发。
-		go func(task Task, req *pb.DecryptRequest) {
+		go func(task Task) {
 			WMDispatcher.Submit(&task)
 			result := <-task.Result
 
@@ -196,21 +197,21 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 				reply = &pb.DecryptReply{
 					Header: &pb.ReplyHeader{Code: -1, Msg: result.Error.Error()},
 					Data: &pb.DecryptData{
-						AdamId:      req.Data.AdamId,
-						Key:         req.Data.Key,
-						Sample:      req.Data.Sample,
-						SampleIndex: req.Data.SampleIndex,
+						AdamId:      task.AdamId,
+						Key:         task.Key,
+						Sample:      task.Payload,
+						SampleIndex: task.SampleIndex,
 					},
 				}
 			} else {
-				decryptBytes.Add(uint64(len(req.Data.Sample)))
+				decryptBytes.Add(uint64(len(task.Payload)))
 				decryptCount.Add(1)
 				reply = &pb.DecryptReply{
 					Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"},
 					Data: &pb.DecryptData{
-						AdamId:      req.Data.AdamId,
-						Key:         req.Data.Key,
-						SampleIndex: req.Data.SampleIndex,
+						AdamId:      task.AdamId,
+						Key:         task.Key,
+						SampleIndex: task.SampleIndex,
 						Sample:      result.Data,
 					},
 				}
@@ -219,10 +220,10 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 			// 写回给客户端的隧道受全局单锁保护
 			sendMu.Lock()
 			if err := stream.Send(reply); err != nil {
-				log.Errorf("failed to send decrypt reply to %s: %v", req.Data.AdamId, err)
+				log.Errorf("failed to send decrypt reply to %s: %v", task.AdamId, err)
 			}
 			sendMu.Unlock()
-		}(task, req)
+		}(task)
 	}
 }
 
@@ -233,7 +234,7 @@ func (s *server) M3U8(c context.Context, req *pb.M3U8Request) (*pb.M3U8Reply, er
 	} else {
 		log.Infof("m3u8 request from unknown peer")
 	}
-	instance, err := GlobalManager.SelectInstance(req.Data.AdamId)
+	instance, err := GlobalManager.SelectInstance(req.Data.AdamId, "")
 	if err != nil {
 		return &pb.M3U8Reply{
 			Header: &pb.ReplyHeader{
@@ -356,7 +357,7 @@ func (s *server) WebPlayback(c context.Context, req *pb.WebPlaybackRequest) (*pb
 	} else {
 		log.Infof("webplayback request from unknown peer")
 	}
-	instance, err := GlobalManager.SelectInstance(req.Data.AdamId)
+	instance, err := GlobalManager.SelectInstance(req.Data.AdamId, "")
 	if err != nil {
 		return &pb.WebPlaybackReply{
 			Header: &pb.ReplyHeader{
@@ -424,7 +425,7 @@ func (s *server) License(c context.Context, req *pb.LicenseRequest) (*pb.License
 	} else {
 		log.Infof("license request from unknown peer")
 	}
-	instance, err := GlobalManager.SelectInstance(req.Data.AdamId)
+	instance, err := GlobalManager.SelectInstance(req.Data.AdamId, "")
 	if err != nil {
 		return &pb.LicenseReply{
 			Header: &pb.ReplyHeader{

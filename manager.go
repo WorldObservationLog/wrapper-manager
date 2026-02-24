@@ -163,7 +163,7 @@ func (m *InstanceManager) getFailedInstanceIds(adamId string, d time.Duration) m
 	return res
 }
 
-func (m *InstanceManager) SelectInstance(adamId string) (*WrapperInstance, error) {
+func (m *InstanceManager) SelectInstance(adamId string, key string) (*WrapperInstance, error) {
 	// Snapshot instances via O(1) lock-free atomic read
 	instancesSnapshot := m.instancesCache.Load().([]*WrapperInstance)
 
@@ -181,7 +181,7 @@ func (m *InstanceManager) SelectInstance(adamId string) (*WrapperInstance, error
 		inst.Unlock()
 
 		if ready && client != nil && !client.IsBroken() {
-			if client.GetTargetAdamId() == adamId {
+			if client.GetTargetAdamId() == adamId && client.GetTargetKey() == key {
 				if !failedInstanceIds[inst.Id] && !inst.IsUnhealthy() {
 					// 命中缓存，直接放行，吞吐量提升至满带宽。
 					return inst, nil
@@ -221,6 +221,7 @@ func (m *InstanceManager) SelectInstance(adamId string) (*WrapperInstance, error
 		client := inst.Client
 		activeTasks := client.GetActiveTasks()
 		targetAdamId := client.GetTargetAdamId()
+		targetKey := client.GetTargetKey()
 		healthPenalty := inst.CalculateHealthPenalty()
 
 		score := int(activeTasks) * 100
@@ -231,8 +232,13 @@ func (m *InstanceManager) SelectInstance(adamId string) (*WrapperInstance, error
 		}
 
 		if targetAdamId == adamId {
-			// Affinity (Bonus: 0 extra penalty)
-			score += 0
+			if key == "" || targetKey == key {
+				// Perfect affinity or M3U8 request (no specific key, just tie to adamId)
+				score += 0
+			} else {
+				// Different key requires switchContext, penalize heavily to separate video/audio tracks
+				score += 999999
+			}
 		} else if targetAdamId == "" {
 			// Idle (Spillover penalty)
 			// Base idle penalty is MaxQueueThreshold * 100.
@@ -322,14 +328,20 @@ func (m *InstanceManager) SelectInstance(adamId string) (*WrapperInstance, error
 				client := inst.Client
 				active := client.GetActiveTasks()
 				tId := client.GetTargetAdamId()
+				tKey := client.GetTargetKey()
 				hPenalty := inst.CalculateHealthPenalty()
 
 				s := int(active)*100 + hPenalty
 				if failedInstanceIds[inst.Id] {
 					s += 50000
 				}
+
 				if tId == adamId {
-					s += 0
+					if key == "" || tKey == key {
+						s += 0
+					} else {
+						s += 999999
+					}
 				} else if tId == "" {
 					s += MaxQueueThreshold * 100
 				} else {
@@ -345,7 +357,7 @@ func (m *InstanceManager) SelectInstance(adamId string) (*WrapperInstance, error
 	}
 
 	// 3. Declare intention before returning to prevent concurrency storms
-	selectedInst.Client.SetTargetAdamId(adamId)
+	selectedInst.Client.SetTarget(adamId, key)
 
 	return selectedInst, nil
 }

@@ -30,6 +30,7 @@ type DecryptClient struct {
 	// Spooling and load balancing
 	activeTasks  atomic.Int32
 	targetAdamId string
+	targetKey    string
 	targetMu     sync.RWMutex
 	isBroken     atomic.Bool
 }
@@ -90,10 +91,17 @@ func (d *DecryptClient) GetTargetAdamId() string {
 	return d.targetAdamId
 }
 
-func (d *DecryptClient) SetTargetAdamId(adamId string) {
+func (d *DecryptClient) GetTargetKey() string {
+	d.targetMu.RLock()
+	defer d.targetMu.RUnlock()
+	return d.targetKey
+}
+
+func (d *DecryptClient) SetTarget(adamId string, key string) {
 	d.targetMu.Lock()
 	defer d.targetMu.Unlock()
 	d.targetAdamId = adamId
+	d.targetKey = key
 }
 
 func (d *DecryptClient) GetLastHandleTime() time.Time {

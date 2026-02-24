@@ -1,22 +1,15 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"sync"
 	"time"
 )
 
-var Lock = sync.Map{}
-
 func GetM3U8(instance *WrapperInstance, adamId string) (string, error) {
-	lock, _ := Lock.LoadOrStore(instance.Id, &sync.Mutex{})
-	lock.(*sync.Mutex).Lock()
-	defer lock.(*sync.Mutex).Unlock()
 
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", instance.M3U8Port), 5*time.Second)
 	if err != nil {
@@ -44,8 +37,8 @@ func GetM3U8(instance *WrapperInstance, adamId string) (string, error) {
 		return "", fmt.Errorf("set read deadline error: %w", err)
 	}
 
-	response, err := bufio.NewReader(conn).ReadBytes('\n')
-	if err != nil {
+	response, err := io.ReadAll(conn)
+	if err != nil && err != io.EOF {
 		return "", fmt.Errorf("conn read error: %w", err)
 	}
 
