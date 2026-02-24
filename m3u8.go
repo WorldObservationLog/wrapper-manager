@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -37,8 +38,8 @@ func GetM3U8(instance *WrapperInstance, adamId string) (string, error) {
 		return "", fmt.Errorf("set read deadline error: %w", err)
 	}
 
-	response, err := io.ReadAll(conn)
-	if err != nil && err != io.EOF {
+	response, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil {
 		return "", fmt.Errorf("conn read error: %w", err)
 	}
 
