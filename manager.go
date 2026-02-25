@@ -198,7 +198,7 @@ func (m *InstanceManager) SelectInstance(adamId string, key string) (*WrapperIns
 		client := inst.Client
 		inst.Unlock()
 
-		if ready && client != nil && !inst.IsUnhealthy() {
+		if ready && client != nil && !client.IsBroken() && !inst.IsUnhealthy() {
 			validSnapshot = append(validSnapshot, inst)
 		}
 	}
