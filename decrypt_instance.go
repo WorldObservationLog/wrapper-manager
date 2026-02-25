@@ -36,9 +36,20 @@ type DecryptClient struct {
 }
 
 func NewDecryptClient(port int) (*DecryptClient, error) {
-	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	var conn net.Conn
+	var err error
+
+	// Add retry mechanism to tolerate slight desync between Python printing "listening" and OS socket readiness
+	for i := 0; i < 5; i++ {
+		conn, err = net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to dial after 5 retries: %w", err)
 	}
 	client := &DecryptClient{
 		port:           port,
