@@ -56,13 +56,17 @@ func (d *Dispatcher) Submit(task *Task) {
 		}
 
 		// Ensure client is ready
-		if inst.Client == nil {
+		inst.Lock()
+		client := inst.Client
+		inst.Unlock()
+
+		if client == nil {
 			lastErr = fmt.Errorf("instance client not ready")
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 
-		resultData, opErr := inst.Client.Process(task.AdamId, task.Key, task.Payload)
+		resultData, opErr := client.Process(task.AdamId, task.Key, task.Payload)
 		if opErr == nil {
 			// Success
 			task.Result <- &Result{

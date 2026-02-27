@@ -132,6 +132,10 @@ func (d *DecryptClient) Process(adamId string, key string, payload []byte) ([]by
 	d.connMu.Lock()
 	defer d.connMu.Unlock()
 
+	if d.IsBroken() {
+		return nil, fmt.Errorf("client is broken due to previous network error")
+	}
+
 	d.stateMu.Lock()
 	d.LastHandleTime = time.Now()
 	currentLastKey := d.LastKey
