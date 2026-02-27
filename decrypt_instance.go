@@ -62,8 +62,6 @@ func NewDecryptClient(port int) (*DecryptClient, error) {
 }
 
 func (d *DecryptClient) Close() {
-	d.connMu.Lock()
-	defer d.connMu.Unlock()
 	d.isBroken.Store(true)
 	if d.conn != nil {
 		err := d.conn.Close()
@@ -78,11 +76,9 @@ func (d *DecryptClient) markBroken(cause error) {
 	if d.isBroken.CompareAndSwap(false, true) {
 		logrus.Errorf("DecryptClient marked broken due to network error: %v", cause)
 
-		d.connMu.Lock()
 		if d.conn != nil {
 			_ = d.conn.Close()
 		}
-		d.connMu.Unlock()
 	}
 }
 
