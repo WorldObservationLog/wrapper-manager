@@ -591,15 +591,12 @@ func main() {
 	}
 	var opts []grpc.ServerOption
 	opts = append(opts, grpc.KeepaliveParams(keepalive.ServerParameters{
-		MaxConnectionIdle:     15 * time.Minute,
-		MaxConnectionAge:      30 * time.Minute,
-		MaxConnectionAgeGrace: 5 * time.Minute,
-		Time:                  5 * time.Minute, // Ping the client if it is idle for 5 minutes
-		Timeout:               1 * time.Minute, // Wait 1 second for the ping ack before assuming the connection is dead
+		Time:    30 * time.Second, // 每隔 30 秒向空闲的客户端发一次 Ping
+		Timeout: 10 * time.Second, // 客户端如果 10 秒内不回 Ack 就断开
 	}))
 	opts = append(opts, grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-		MinTime:             5 * time.Minute, // If a client pings more than once every 5 minutes, terminate the connection
-		PermitWithoutStream: true,            // Allow pings even when there are no active streams
+		MinTime:             5 * time.Minute, // 客户端如果自行发送 ping, 频率至少要隔 5 分钟
+		PermitWithoutStream: true,            // 允许客户端在没有任何 active stream（完全挂机）的时候给服务端发 Ping 续命
 	}))
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterWrapperManagerServiceServer(grpcServer, newServer())
