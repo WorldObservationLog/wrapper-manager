@@ -19,7 +19,9 @@ var (
 func GetHttpClient() *http.Client {
 	httpClientOnce.Do(func() {
 		if PROXY == "" {
-			globalHttpClient = http.DefaultClient
+			globalHttpClient = &http.Client{
+				Timeout: 30 * time.Second,
+			}
 		} else {
 			proxyUrl, err := url.Parse(PROXY)
 			if err != nil {
@@ -32,7 +34,10 @@ func GetHttpClient() *http.Client {
 				MaxIdleConnsPerHost: 100,
 				IdleConnTimeout:     90 * time.Second,
 			}
-			globalHttpClient = &http.Client{Transport: transport}
+			globalHttpClient = &http.Client{
+				Transport: transport,
+				Timeout:   30 * time.Second, // 加上全局超时防止苹果 API 挂起导致大规模 Goroutine 阻塞
+			}
 		}
 	})
 	return globalHttpClient

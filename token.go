@@ -2,12 +2,13 @@ package main
 
 import (
 	"fmt"
-	"github.com/hashicorp/golang-lru/v2/expirable"
 	"io"
 	"net/http"
 	"os"
 	"regexp"
 	"time"
+
+	"github.com/hashicorp/golang-lru/v2/expirable"
 )
 
 var cache = expirable.NewLRU[string, string](1, nil, time.Hour*24)
@@ -33,12 +34,11 @@ func GetToken() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			panic(err)
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("failed to close response body: %v\n", err)
 		}
-	}(resp.Body)
+	}()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -57,12 +57,11 @@ func GetToken() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			panic(err)
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("failed to close response body: %v\n", err)
 		}
-	}(resp.Body)
+	}()
 
 	body, err = io.ReadAll(resp.Body)
 	if err != nil {

@@ -21,6 +21,7 @@ import (
 	"github.com/gofrs/uuid/v5"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -154,6 +155,8 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 
 	// 并发写保护：在一个 gRPC stream 内允许多个 goroutine 归还结果时，必须锁定以防止帧交错损坏。
 	var sendMu sync.Mutex
+	ctx, cancel := context.WithCancel(stream.Context())
+	defer cancel()
 
 	for {
 		req, err := stream.Recv()
@@ -161,16 +164,25 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 			return nil
 		}
 		if err != nil {
+			log.Errorf("stream recv error: %v", err)
 			return err
 		}
 
 		if req.Data.AdamId == "KEEPALIVE" {
-			err = stream.Send(&pb.DecryptReply{
-				Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"},
-				Data:   &pb.DecryptData{AdamId: "KEEPALIVE"},
-			})
-			if err != nil {
-				return err
+			// KEEPALIVE 必须能够快速响应，不能因为此时正在发送大块解密数据（网络拥塞）而被 sendMu 长时间阻塞。
+			// 如果获取不到锁，说明底层 TCP 缓冲区可能满载正在发送数据，此时不仅没空发心跳，并且“正在发数据”本身就起到了保活作用，所以就算跳过此次心跳也没有关系。
+			if sendMu.TryLock() {
+				err = stream.Send(&pb.DecryptReply{
+					Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"},
+					Data:   &pb.DecryptData{AdamId: "KEEPALIVE"},
+				})
+				sendMu.Unlock()
+				if err != nil {
+					log.Errorf("failed to send KEEPALIVE reply: %v", err)
+					return err
+				}
+			} else {
+				log.Debug("Skipped sending KEEPALIVE reply because stream is busy sending data")
 			}
 			continue
 		}
@@ -190,39 +202,48 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 		// 将整个解密等待环节异步抛出，解放 gRPC 主 Recv() 循环的超高并发。
 		go func(task Task) {
 			WMDispatcher.Submit(&task)
-			result := <-task.Result
 
-			var reply *pb.DecryptReply
-			if result.Error != nil {
-				reply = &pb.DecryptReply{
-					Header: &pb.ReplyHeader{Code: -1, Msg: result.Error.Error()},
-					Data: &pb.DecryptData{
-						AdamId:      task.AdamId,
-						Key:         task.Key,
-						Sample:      task.Payload,
-						SampleIndex: task.SampleIndex,
-					},
+			select {
+			case <-ctx.Done():
+				// 如果流已被客户端关闭或发生错误中断，直接丢弃结果，防止向 closed stream 写入引发 panic
+				return
+			case result := <-task.Result:
+				var reply *pb.DecryptReply
+				if result.Error != nil {
+					reply = &pb.DecryptReply{
+						Header: &pb.ReplyHeader{Code: -1, Msg: result.Error.Error()},
+						Data: &pb.DecryptData{
+							AdamId:      task.AdamId,
+							Key:         task.Key,
+							Sample:      task.Payload,
+							SampleIndex: task.SampleIndex,
+						},
+					}
+				} else {
+					decryptBytes.Add(uint64(len(task.Payload)))
+					decryptCount.Add(1)
+					reply = &pb.DecryptReply{
+						Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"},
+						Data: &pb.DecryptData{
+							AdamId:      task.AdamId,
+							Key:         task.Key,
+							SampleIndex: task.SampleIndex,
+							Sample:      result.Data,
+						},
+					}
 				}
-			} else {
-				decryptBytes.Add(uint64(len(task.Payload)))
-				decryptCount.Add(1)
-				reply = &pb.DecryptReply{
-					Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"},
-					Data: &pb.DecryptData{
-						AdamId:      task.AdamId,
-						Key:         task.Key,
-						SampleIndex: task.SampleIndex,
-						Sample:      result.Data,
-					},
-				}
-			}
 
-			// 写回给客户端的隧道受全局单锁保护
-			sendMu.Lock()
-			if err := stream.Send(reply); err != nil {
-				log.Errorf("failed to send decrypt reply to %s: %v", task.AdamId, err)
+				// 写回给客户端的隧道受全局单锁保护
+				sendMu.Lock()
+				// 再次检查 context 状态，避免在获取锁的等待期间流已经被关闭
+				if ctx.Err() == nil {
+					if err := stream.Send(reply); err != nil {
+						log.Errorf("failed to send decrypt reply to %s: %v", task.AdamId, err)
+						cancel() // 通知其他 goroutine 停止发送
+					}
+				}
+				sendMu.Unlock()
 			}
-			sendMu.Unlock()
 		}(task)
 	}
 }
@@ -569,6 +590,17 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 	var opts []grpc.ServerOption
+	opts = append(opts, grpc.KeepaliveParams(keepalive.ServerParameters{
+		MaxConnectionIdle:     15 * time.Minute,
+		MaxConnectionAge:      30 * time.Minute,
+		MaxConnectionAgeGrace: 5 * time.Minute,
+		Time:                  5 * time.Minute, // Ping the client if it is idle for 5 minutes
+		Timeout:               1 * time.Minute, // Wait 1 second for the ping ack before assuming the connection is dead
+	}))
+	opts = append(opts, grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+		MinTime:             5 * time.Minute, // If a client pings more than once every 5 minutes, terminate the connection
+		PermitWithoutStream: true,            // Allow pings even when there are no active streams
+	}))
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterWrapperManagerServiceServer(grpcServer, newServer())
 	reflection.Register(grpcServer)
