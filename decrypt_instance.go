@@ -157,6 +157,9 @@ func (d *DecryptClient) Process(adamId string, key string, payload []byte) ([]by
 }
 
 func (d *DecryptClient) decrypt(sample []byte) ([]byte, error) {
+	if len(sample) == 0 {
+		return []byte{}, nil
+	}
 	if err := d.conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, err
 	}
