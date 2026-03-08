@@ -228,7 +228,7 @@ func (m *InstanceManager) SelectInstance(adamId string, key string) (*WrapperIns
 		score += healthPenalty
 
 		if failedInstanceIds[inst.Id] {
-			score += 50000 // Heavy penalty for recently failed this adamId, but not a hard block if it's the only one left
+			score += 5000000 // Heavy penalty for recently failed this adamId, but not a hard block if it's the only one left
 		}
 
 		if targetAdamId == adamId {
@@ -333,7 +333,7 @@ func (m *InstanceManager) SelectInstance(adamId string, key string) (*WrapperIns
 
 				s := int(active)*100 + hPenalty
 				if failedInstanceIds[inst.Id] {
-					s += 50000
+					s += 5000000
 				}
 
 				if tId == adamId {
@@ -402,6 +402,163 @@ func (m *InstanceManager) SelectInstanceForLyrics(adamId string, language string
 		return candidates[rand.Intn(len(candidates))]
 	}
 	return nil
+}
+
+func (m *InstanceManager) SelectM3U8Instance(adamId string) (*WrapperInstance, error) {
+	instancesSnapshot := m.instancesCache.Load().([]*WrapperInstance)
+	failedInstanceIds := m.getFailedInstanceIds(adamId, 10*time.Minute)
+
+	var validSnapshot []*WrapperInstance
+	for _, inst := range instancesSnapshot {
+		inst.Lock()
+		ready := inst.Ready
+		client := inst.Client
+		inst.Unlock()
+
+		if ready && client != nil && !client.IsBroken() && !inst.IsUnhealthy() {
+			validSnapshot = append(validSnapshot, inst)
+		}
+	}
+
+	if len(validSnapshot) == 0 {
+		return nil, fmt.Errorf("no healthy and ready instances available")
+	}
+
+	type candidate struct {
+		inst  *WrapperInstance
+		score int
+	}
+
+	var bestCandidate candidate
+	bestCandidate.score = 2147483647
+
+	var wg sync.WaitGroup
+	type regResult struct {
+		inst *WrapperInstance
+		err  error
+	}
+	candidatesChan := make(chan regResult, len(validSnapshot))
+
+	for _, inst := range validSnapshot {
+		wg.Add(1)
+		go func(instance *WrapperInstance) {
+			defer wg.Done()
+			avail, err := checkAvailableOnRegion(adamId, instance.Region, false)
+			if err != nil {
+				candidatesChan <- regResult{inst: nil, err: err}
+				return
+			}
+			if avail {
+				candidatesChan <- regResult{inst: instance, err: nil}
+			}
+		}(inst)
+	}
+
+	go func() {
+		wg.Wait()
+		close(candidatesChan)
+	}()
+
+	var availableCandidates []*WrapperInstance
+	var lastErr error
+	for res := range candidatesChan {
+		if res.err != nil {
+			lastErr = res.err
+			continue
+		}
+		if res.inst != nil {
+			availableCandidates = append(availableCandidates, res.inst)
+		}
+	}
+
+	if len(availableCandidates) == 0 {
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, fmt.Errorf("no available instance on any region")
+	}
+
+	for _, inst := range availableCandidates {
+		// Only consider basic health penalty and M3U8 failure penalty
+		score := inst.CalculateHealthPenalty()
+		if failedInstanceIds[inst.Id] {
+			score += 5000000
+		}
+
+		if score < bestCandidate.score {
+			bestCandidate = candidate{inst: inst, score: score}
+		}
+	}
+
+	// Deliberately DO NOT call SetTarget! M3U8 is an independent TCP connection.
+	return bestCandidate.inst, nil
+}
+
+func (m *InstanceManager) SelectWebInstance(adamId string) (*WrapperInstance, error) {
+	instancesSnapshot := m.instancesCache.Load().([]*WrapperInstance)
+
+	var validSnapshot []*WrapperInstance
+	for _, inst := range instancesSnapshot {
+		inst.Lock()
+		ready := inst.Ready
+		inst.Unlock()
+
+		if ready {
+			validSnapshot = append(validSnapshot, inst)
+		}
+	}
+
+	if len(validSnapshot) == 0 {
+		return nil, fmt.Errorf("no ready instances available")
+	}
+
+	var wg sync.WaitGroup
+	type regResult struct {
+		inst *WrapperInstance
+		err  error
+	}
+	candidatesChan := make(chan regResult, len(validSnapshot))
+
+	for _, inst := range validSnapshot {
+		wg.Add(1)
+		go func(instance *WrapperInstance) {
+			defer wg.Done()
+			avail, err := checkAvailableOnRegion(adamId, instance.Region, false)
+			if err != nil {
+				candidatesChan <- regResult{inst: nil, err: err}
+				return
+			}
+			if avail {
+				candidatesChan <- regResult{inst: instance, err: nil}
+			}
+		}(inst)
+	}
+
+	go func() {
+		wg.Wait()
+		close(candidatesChan)
+	}()
+
+	var availableCandidates []*WrapperInstance
+	var lastErr error
+	for res := range candidatesChan {
+		if res.err != nil {
+			lastErr = res.err
+			continue
+		}
+		if res.inst != nil {
+			availableCandidates = append(availableCandidates, res.inst)
+		}
+	}
+
+	if len(availableCandidates) == 0 {
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, fmt.Errorf("no available instance on any region")
+	}
+
+	return availableCandidates[rand.Intn(len(availableCandidates))], nil
 }
 
 func (m *InstanceManager) StopAll() {

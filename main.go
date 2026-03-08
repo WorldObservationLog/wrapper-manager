@@ -255,7 +255,7 @@ func (s *server) M3U8(c context.Context, req *pb.M3U8Request) (*pb.M3U8Reply, er
 	} else {
 		log.Infof("m3u8 request from unknown peer")
 	}
-	instance, err := GlobalManager.SelectInstance(req.Data.AdamId, "")
+	instance, err := GlobalManager.SelectM3U8Instance(req.Data.AdamId)
 	if err != nil {
 		return &pb.M3U8Reply{
 			Header: &pb.ReplyHeader{
@@ -378,7 +378,7 @@ func (s *server) WebPlayback(c context.Context, req *pb.WebPlaybackRequest) (*pb
 	} else {
 		log.Infof("webplayback request from unknown peer")
 	}
-	instance, err := GlobalManager.SelectInstance(req.Data.AdamId, "")
+	instance, err := GlobalManager.SelectWebInstance(req.Data.AdamId)
 	if err != nil {
 		return &pb.WebPlaybackReply{
 			Header: &pb.ReplyHeader{
@@ -446,7 +446,7 @@ func (s *server) License(c context.Context, req *pb.LicenseRequest) (*pb.License
 	} else {
 		log.Infof("license request from unknown peer")
 	}
-	instance, err := GlobalManager.SelectInstance(req.Data.AdamId, "")
+	instance, err := GlobalManager.SelectWebInstance(req.Data.AdamId)
 	if err != nil {
 		return &pb.LicenseReply{
 			Header: &pb.ReplyHeader{
