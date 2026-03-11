@@ -3,20 +3,22 @@ package main
 import (
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type WrapperInstance struct {
-	Id          string         `json:"id"`
-	Region      string         `json:"region"`
-	DecryptPort int            `json:"-"`
-	M3U8Port    int            `json:"-"`
-	NoRestart   bool           `json:"-"`
-	Cmd         *exec.Cmd      `json:"-"`
-	Client      *DecryptClient `json:"-"`
-	Ready       bool           `json:"-"`
-	CrashTimes  []time.Time    `json:"-"`
-	mu          sync.Mutex
+	Id                      string         `json:"id"`
+	Region                  string         `json:"region"`
+	DecryptPort             int            `json:"-"`
+	M3U8Port                int            `json:"-"`
+	M3U8ConsecutiveFailures atomic.Int32   `json:"-"`
+	NoRestart               bool           `json:"-"`
+	Cmd                     *exec.Cmd      `json:"-"`
+	Client                  *DecryptClient `json:"-"`
+	Ready                   bool           `json:"-"`
+	CrashTimes              []time.Time    `json:"-"`
+	mu                      sync.Mutex
 }
 
 func (w *WrapperInstance) Lock() {

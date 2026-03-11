@@ -144,6 +144,24 @@ func (m *InstanceManager) ReportFailure(adamId string, instanceId string) {
 	m.failedRecords[adamId][instanceId] = time.Now()
 }
 
+// CleanupFailedRecords 回收那些已长久过期的 M3U8 失败记录，防止长期运行内存泄漏
+func (m *InstanceManager) CleanupFailedRecords(d time.Duration) {
+	m.failedRecordMu.Lock()
+	defer m.failedRecordMu.Unlock()
+
+	now := time.Now()
+	for adamId, records := range m.failedRecords {
+		for instId, failureTime := range records {
+			if now.Sub(failureTime) >= d {
+				delete(records, instId)
+			}
+		}
+		if len(records) == 0 {
+			delete(m.failedRecords, adamId)
+		}
+	}
+}
+
 func (m *InstanceManager) getFailedInstanceIds(adamId string, d time.Duration) map[string]bool {
 	m.failedRecordMu.RLock()
 	defer m.failedRecordMu.RUnlock()
@@ -167,9 +185,6 @@ func (m *InstanceManager) SelectInstance(adamId string, key string) (*WrapperIns
 	// Snapshot instances via O(1) lock-free atomic read
 	instancesSnapshot := m.instancesCache.Load().([]*WrapperInstance)
 
-	// 0. Get recently failed instances (e.g., failed within the last 10 minutes)
-	failedInstanceIds := m.getFailedInstanceIds(adamId, 10*time.Minute)
-
 	// 1. FAST PATH: Stickiness check (affinity)
 	// 本地直达查表：这是恢复 20MB/s 极速解密性能的核心。
 	// 大量并发流媒体请求时，免去数千次的 `HealthPenalty` `SelectInstance` O(N) 遍历以及锁争抢。
@@ -182,7 +197,7 @@ func (m *InstanceManager) SelectInstance(adamId string, key string) (*WrapperIns
 
 		if ready && client != nil && !client.IsBroken() {
 			if client.GetTargetAdamId() == adamId && client.GetTargetKey() == key {
-				if !failedInstanceIds[inst.Id] && !inst.IsUnhealthy() {
+				if !inst.IsUnhealthy() {
 					// 命中缓存，直接放行，吞吐量提升至满带宽。
 					return inst, nil
 				}
@@ -226,10 +241,6 @@ func (m *InstanceManager) SelectInstance(adamId string, key string) (*WrapperIns
 
 		score := int(activeTasks) * 100
 		score += healthPenalty
-
-		if failedInstanceIds[inst.Id] {
-			score += 5000000 // Heavy penalty for recently failed this adamId, but not a hard block if it's the only one left
-		}
 
 		if targetAdamId == adamId {
 			if key == "" || targetKey == key {
@@ -332,9 +343,6 @@ func (m *InstanceManager) SelectInstance(adamId string, key string) (*WrapperIns
 				hPenalty := inst.CalculateHealthPenalty()
 
 				s := int(active)*100 + hPenalty
-				if failedInstanceIds[inst.Id] {
-					s += 5000000
-				}
 
 				if tId == adamId {
 					if key == "" || tKey == key {

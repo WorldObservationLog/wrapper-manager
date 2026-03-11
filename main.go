@@ -569,6 +569,45 @@ func main() {
 		}
 	}()
 
+	go func() {
+		watcherTicker := time.NewTicker(10 * time.Second)
+		defer watcherTicker.Stop()
+		for range watcherTicker.C {
+			if GlobalManager == nil || !Ready {
+				continue
+			}
+			list := GlobalManager.List()
+			for _, inst := range list {
+				inst.Lock()
+				client := inst.Client
+				m3Failures := inst.M3U8ConsecutiveFailures.Load()
+				inst.Unlock()
+
+				isClientBroken := client != nil && client.IsBroken()
+				isM3U8Unresponsive := m3Failures >= 3
+
+				if isClientBroken || isM3U8Unresponsive {
+					reason := ""
+					if isClientBroken {
+						reason = "DecryptClient is broken"
+					} else {
+						reason = "M3U8 is unresponsive"
+					}
+					log.Warnf("Watchdog: Instance %s is dead (%s). Killing wrapper to trigger auto-restart.", inst.Id, reason)
+
+					// Force kill to unblock cmd.Wait() in wrapperStart()
+					err := KillWrapper(inst.Id)
+					if err != nil {
+						log.Errorf("Watchdog: Failed to kill instance %s: %v", inst.Id, err)
+					}
+				}
+			}
+
+			// Clean up memory leaks for old M3U8 failed records
+			GlobalManager.CleanupFailedRecords(15 * time.Minute)
+		}
+	}()
+
 	WMDispatcher = NewDispatcher()
 
 	if _, err := os.Stat("data/instances.json"); !errors.Is(err, os.ErrNotExist) {

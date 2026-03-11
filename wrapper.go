@@ -230,18 +230,12 @@ func wrapperDown(instance *WrapperInstance) {
 	instance.Ready = false
 	instance.Unlock()
 
-	// Remove from manager? Or keep it but mark as not ready?
-	// Original logic removed it from Instances slice.
-	// But GlobalManager.Remove removes it from map.
-	// We should probably keep it if we plan to restart it.
-	// But InsertInstance used to append only if not exists.
-	// RemoveInstance removed it.
-	// If restarting, WrapperStart creates NEW WrapperInstance struct?
-	// WrapperStart(id) creates NEW WrapperInstance.
-	// So yes, we should remove the old one.
-
-	GlobalManager.Remove(instance.Id)
-	// WMDispatcher.RemoveInstance(instance.Id) // Removed
+	// Only remove from GlobalManager if we are genuinely not restarting (like on Logout or initial Failure).
+	// If it's going to restart, we keep it in the manager so it isn't lost from instances.json dumps.
+	// But it is no longer marked as Ready, so it won't receive traffic.
+	if instance.NoRestart {
+		GlobalManager.Remove(instance.Id)
+	}
 
 	if !instance.NoRestart {
 		// Check crash loop
@@ -256,11 +250,10 @@ func wrapperDown(instance *WrapperInstance) {
 		newCrashTimes = append(newCrashTimes, now)
 
 		if len(newCrashTimes) >= 5 {
-			log.Errorf("Wrapper %s crashed %d times in 1 minute, stopping restart", instance.Id, len(newCrashTimes))
-			// We don't restart, effectively stopping it.
-			// Should we alert user? logging error is good enough for now.
+			log.Errorf("Wrapper %s crashed %d times in 1 minute, stopping restart. Data kept in instances.json", instance.Id, len(newCrashTimes))
+			// We don't restart, effectively stopping it, but DO NOT REMOVE the account data.
 
-			// Ensure we save the state (that the instance is removed/stopped)
+			// Ensure we save the state (Ready=false)
 			GlobalManager.Save()
 			return
 		}
@@ -366,8 +359,9 @@ func NoSubscriptionHandler(instance *WrapperInstance) {
 	if instance.NoRestart {
 		go LoginFailedHandler(instance.Id)
 	} else {
-		GlobalManager.Remove(instance.Id)
-		RemoveWrapperData(instance.Id)
+		// Just stop restarting until user manually checks. Removing it wipes the credentials which might be a temporary error.
+		log.Warnf("Instance %s reported No Active Subscription. Stopping auto-restart but keeping data.", instance.Id)
+		instance.NoRestart = true
 		GlobalManager.Save()
 	}
 }
