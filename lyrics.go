@@ -31,7 +31,7 @@ type LyricResponse struct {
 }
 
 func GetLyrics(adamID string, region string, language string, token string, musicToken string) (string, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s/syllable-lyrics?l[lyrics]=%s&extend=ttmlLocalizations&l[script]=en-Latn", region, adamID, language), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s/syllable-lyrics?l=%s&extend=ttmlLocalizations", region, adamID, language), nil)
 	if err != nil {
 		return "", err
 	}
@@ -68,7 +68,7 @@ func GetLyrics(adamID string, region string, language string, token string, musi
 }
 
 func HasLyrics(adamID string, region string, language string, token string, musicToken string) bool {
-	req, err := http.NewRequest("HEAD", fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s/syllable-lyrics?l[lyrics]=%s&extend=ttmlLocalizations&l[script]=en-Latn", region, adamID, language), nil)
+	req, err := http.NewRequest("HEAD", fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s/syllable-lyrics?l=%s&extend=ttmlLocalizations", region, adamID, language), nil)
 	if err != nil {
 		return false
 	}
