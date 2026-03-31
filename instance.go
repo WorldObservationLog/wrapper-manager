@@ -3,7 +3,6 @@ package main
 import (
 	"os/exec"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -12,7 +11,8 @@ type WrapperInstance struct {
 	Region                  string         `json:"region"`
 	DecryptPort             int            `json:"-"`
 	M3U8Port                int            `json:"-"`
-	M3U8ConsecutiveFailures atomic.Int32   `json:"-"`
+	M3U8Health              int32          `json:"-"`
+	LastM3U8Error           time.Time      `json:"-"`
 	NoRestart               bool           `json:"-"`
 	Cmd                     *exec.Cmd      `json:"-"`
 	Client                  *DecryptClient `json:"-"`
@@ -64,4 +64,39 @@ func (w *WrapperInstance) IsUnhealthy() bool {
 		}
 	}
 	return recentCrashes >= 3
+}
+
+func (w *WrapperInstance) ReportM3U8Error() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	now := time.Now()
+	// 2 seconds cooldown for concurrent penalty
+	if now.Sub(w.LastM3U8Error) > 2*time.Second {
+		w.M3U8Health -= 20
+		if w.M3U8Health < 0 {
+			w.M3U8Health = 0
+		}
+		w.LastM3U8Error = now
+	}
+}
+
+func (w *WrapperInstance) ReportM3U8Success() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.M3U8Health = 100
+}
+
+func (w *WrapperInstance) RecoverM3U8Health(amount int32) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.M3U8Health += amount
+	if w.M3U8Health > 100 {
+		w.M3U8Health = 100
+	}
+}
+
+func (w *WrapperInstance) GetM3U8Health() int32 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.M3U8Health
 }

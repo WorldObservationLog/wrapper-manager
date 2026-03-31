@@ -129,6 +129,7 @@ func LoadInstance() *InstanceManager {
 		panic(err)
 	}
 	for _, inst := range instances {
+		inst.M3U8Health = 100
 		manager.instances[inst.Id] = inst
 	}
 	manager.updateCache()

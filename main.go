@@ -578,13 +578,15 @@ func main() {
 			}
 			list := GlobalManager.List()
 			for _, inst := range list {
+				inst.RecoverM3U8Health(5)
+
 				inst.Lock()
 				client := inst.Client
-				m3Failures := inst.M3U8ConsecutiveFailures.Load()
+				m3Health := inst.M3U8Health
 				inst.Unlock()
 
 				isClientBroken := client != nil && client.IsBroken()
-				isM3U8Unresponsive := m3Failures >= 3
+				isM3U8Unresponsive := m3Health <= 0
 
 				if isClientBroken || isM3U8Unresponsive {
 					reason := ""

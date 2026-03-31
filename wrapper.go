@@ -79,6 +79,7 @@ func WrapperInitial(account string, password string) {
 		Id:          id.String(),
 		DecryptPort: GenerateUniquePort(),
 		M3U8Port:    GenerateUniquePort(),
+		M3U8Health:  100,
 		NoRestart:   true,
 	}
 
@@ -121,6 +122,7 @@ func WrapperStart(id string, crashTimes []time.Time) {
 		Id:          id,
 		DecryptPort: GenerateUniquePort(),
 		M3U8Port:    GenerateUniquePort(),
+		M3U8Health:  100,
 		NoRestart:   false,
 		CrashTimes:  crashTimes,
 	}
