@@ -103,6 +103,23 @@ func SelectInstance(adamId string) (string, error) {
 	return "", nil
 }
 
+func SelectMVInstance(adamId string) (string, error) {
+	var selectedInstances []string
+	for _, instance := range Instances {
+		available, err := checkAvailableOnRegion(adamId, instance.Region, true)
+		if err != nil {
+			return "", err
+		}
+		if available {
+			selectedInstances = append(selectedInstances, instance.Id)
+		}
+	}
+	if len(selectedInstances) != 0 {
+		return selectedInstances[rand.Intn(len(selectedInstances))], nil
+	}
+	return "", nil
+}
+
 func SelectInstanceForLyrics(adamId string, language string) string {
 	token, err := GetToken()
 	if err != nil {

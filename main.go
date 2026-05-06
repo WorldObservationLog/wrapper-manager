@@ -492,6 +492,49 @@ func (s *server) License(c context.Context, req *pb.LicenseRequest) (*pb.License
 	}, nil
 }
 
+func (s *server) Tokens(c context.Context, req *pb.TokensRequest) (*pb.TokensReply, error) {
+	p, ok := peer.FromContext(c)
+	if ok {
+		log.Infof("tokens request from %s", p.Addr.String())
+	} else {
+		log.Infof("tokens request from unknown peer")
+	}
+	instanceID, err := SelectMVInstance(req.Data.AdamId)
+	if err != nil {
+		return &pb.TokensReply{
+			Header: &pb.ReplyHeader{Code: -1, Msg: err.Error()},
+			Data:   nil,
+		}, nil
+	}
+	if instanceID == "" {
+		return &pb.TokensReply{
+			Header: &pb.ReplyHeader{Code: -1, Msg: "no available instance"},
+			Data:   nil,
+		}, nil
+	}
+	bearer, err := GetToken()
+	if err != nil {
+		return &pb.TokensReply{
+			Header: &pb.ReplyHeader{Code: -1, Msg: err.Error()},
+			Data:   nil,
+		}, nil
+	}
+	musicToken, err := GetMusicToken(GetInstance(instanceID))
+	if err != nil {
+		return &pb.TokensReply{
+			Header: &pb.ReplyHeader{Code: -1, Msg: err.Error()},
+			Data:   nil,
+		}, nil
+	}
+	return &pb.TokensReply{
+		Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"},
+		Data: &pb.TokensDataResponse{
+			BearerToken:    bearer,
+			MusicUserToken: musicToken,
+		},
+	}, nil
+}
+
 func newServer() *server {
 	s := &server{}
 	return s

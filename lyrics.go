@@ -22,12 +22,12 @@ func GetHttpClient() *http.Client {
 }
 
 type LyricResponse struct {
-    Errors []interface{} `json:"errors"`
-    Data   []struct {
-        Attributes struct {
-            TtmlLocalizations string `json:"ttmlLocalizations"`
-        } `json:"attributes"`
-    } `json:"data"`
+	Errors []interface{} `json:"errors"`
+	Data   []struct {
+		Attributes struct {
+			TtmlLocalizations string `json:"ttmlLocalizations"`
+		} `json:"attributes"`
+	} `json:"data"`
 }
 
 func GetLyrics(adamID string, region string, language string, token string, musicToken string) (string, error) {

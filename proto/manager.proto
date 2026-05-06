@@ -14,6 +14,7 @@ service WrapperManagerService {
   rpc Lyrics (LyricsRequest) returns (LyricsReply);
   rpc License (LicenseRequest) returns (LicenseReply);
   rpc WebPlayback (WebPlaybackRequest) returns (WebPlaybackReply);
+  rpc Tokens (TokensRequest) returns (TokensReply);
 }
 
 // 通用响应头结构
@@ -169,6 +170,26 @@ message WebPlaybackReply {
 message WebPlaybackDataResponse {
   string adam_id = 1;
   string m3u8 = 2;
+}
+
+// ---------- Tokens ----------
+
+message TokensRequest {
+  TokensDataRequest data = 1;
+}
+
+message TokensDataRequest {
+  string adam_id = 1;
+}
+
+message TokensReply {
+  ReplyHeader header = 1;
+  TokensDataResponse data = 2;
+}
+
+message TokensDataResponse {
+  string bearer_token = 1;
+  string music_user_token = 2;
 }
 
 // ---------- Error ----------
