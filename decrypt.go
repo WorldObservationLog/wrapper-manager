@@ -56,9 +56,7 @@ func (d *Dispatcher) Submit(task *Task) {
 		}
 
 		// Ensure client is ready
-		inst.Lock()
-		client := inst.Client
-		inst.Unlock()
+		client := inst.GetClient()
 
 		if client == nil {
 			lastErr = fmt.Errorf("instance client not ready")

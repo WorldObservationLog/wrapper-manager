@@ -5,15 +5,32 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sync"
+	"time"
 
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"golang.org/x/sync/singleflight"
 )
 
 var (
-	SongRegionCache        sync.Map
+	// SongRegionCache 带 TTL + 容量上限，避免 adamId×region 组合无限驻留导致内存泄漏。
+	// 区域可用性基本静态，24h TTL 足够；上限 10 万条防止突发流量打爆内存。
+	SongRegionCache        = expirable.NewLRU[string, bool](100000, nil, 24*time.Hour)
 	songRegionSingleFlight singleflight.Group
 )
+
+// regionCanServe 判断某 region 是否能提供该 adamId：先查歌曲，歌曲不可用时回退查
+// music-video（等价于旧版 SelectInstance 的 song→mv 两轮逻辑）。song 查询出错直接
+// 返回错误，与旧逻辑一致；song 不可用且无错误时才继续查 mv。
+func regionCanServe(adamId string, region string) (bool, error) {
+	ok, err := checkAvailableOnRegion(adamId, region, false)
+	if err != nil {
+		return false, err
+	}
+	if ok {
+		return true, nil
+	}
+	return checkAvailableOnRegion(adamId, region, true)
+}
 
 func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error) {
 	var cacheKey string
@@ -22,8 +39,8 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 	} else {
 		cacheKey = fmt.Sprintf("song/%s/%s", region, adamId)
 	}
-	if result, ok := SongRegionCache.Load(cacheKey); ok {
-		return result.(bool), nil
+	if result, ok := SongRegionCache.Get(cacheKey); ok {
+		return result, nil
 	}
 
 	val, err, _ := songRegionSingleFlight.Do(cacheKey, func() (interface{}, error) {
@@ -69,7 +86,7 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 		}
 
 		available := respJson["data"] != nil
-		SongRegionCache.Store(cacheKey, available)
+		SongRegionCache.Add(cacheKey, available)
 		return available, nil
 	})
 

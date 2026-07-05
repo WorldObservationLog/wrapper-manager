@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"os/user"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -21,9 +22,11 @@ import (
 	"github.com/gofrs/uuid/v5"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -35,6 +38,10 @@ var (
 	decryptBytes         atomic.Uint64
 	decryptCount         atomic.Uint64
 )
+
+// maxConcurrentDecryptsPerStream 限制单条 Decrypt stream 在途解密 goroutine 上限，
+// 满载时 Recv 循环阻塞形成背压，防止高速客户端打爆 goroutine / 内存。
+const maxConcurrentDecryptsPerStream = 256
 
 type server struct {
 	pb.UnimplementedWrapperManagerServiceServer
@@ -96,9 +103,18 @@ func (s *server) Login(stream grpc.BidiStreamingServer[pb.LoginRequest, pb.Login
 			if err != nil {
 				return err
 			}
+			// 该账号已登录，不应再触发 WrapperInitial / 2FA 流程。
+			continue
 		}
 		if req.Data.TwoStepCode != "" {
-			provide2FACode(id, req.Data.TwoStepCode)
+			if err := provide2FACode(id, req.Data.TwoStepCode); err != nil {
+				log.Errorf("failed to provide 2fa code for %s: %v", id, err)
+				if err := stream.Send(&pb.LoginReply{
+					Header: &pb.ReplyHeader{Code: -1, Msg: "failed to submit 2fa code"},
+				}); err != nil {
+					return err
+				}
+			}
 		} else {
 			LoginConnMap.Store(id, stream)
 			go WrapperInitial(req.Data.Username, req.Data.Password)
@@ -158,6 +174,10 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 
+	// 有界并发：限制单条 stream 在途解密 goroutine 数量。
+	// 信号量满时，Recv 循环自然阻塞，对客户端形成背压，避免无上限堆 goroutine / 内存。
+	sem := make(chan struct{}, maxConcurrentDecryptsPerStream)
+
 	for {
 		req, err := stream.Recv()
 		if err == io.EOF {
@@ -199,8 +219,16 @@ func (s *server) Decrypt(stream grpc.BidiStreamingServer[pb.DecryptRequest, pb.D
 			Result:      make(chan *Result, 1),
 		}
 
+		// 获取信号量配额；流已关闭则立即退出，不再受理新 sample。
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case sem <- struct{}{}:
+		}
+
 		// 将整个解密等待环节异步抛出，解放 gRPC 主 Recv() 循环的超高并发。
 		go func(task Task) {
+			defer func() { <-sem }()
 			WMDispatcher.Submit(&task)
 
 			select {
@@ -513,18 +541,40 @@ func newServer() *server {
 	return s
 }
 
+// recoveryUnaryInterceptor 捕获一元 handler 中的 panic，转为 Internal 错误返回，防止进程崩溃。
+func recoveryUnaryInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("panic recovered in %s: %v\n%s", info.FullMethod, r, debug.Stack())
+			err = status.Errorf(codes.Internal, "internal error")
+		}
+	}()
+	return handler(ctx, req)
+}
+
+// recoveryStreamInterceptor 捕获流式 handler 中的 panic。
+func recoveryStreamInterceptor(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("panic recovered in stream %s: %v\n%s", info.FullMethod, r, debug.Stack())
+			err = status.Errorf(codes.Internal, "internal error")
+		}
+	}()
+	return handler(srv, ss)
+}
+
 func main() {
 	var host = flag.String("host", "localhost", "host of gRPC server")
 	var port = flag.Int("port", 8080, "port of gRPC server")
 	var mirror = flag.Bool("mirror", false, "use mirror to download wrapper and file (for Chinese users)")
-	var debug = flag.Bool("debug", false, "enable debug output")
+	var debug_ = flag.Bool("debug", false, "enable debug output")
 	var prepare = flag.Bool("prepare", false, "only download required files")
 	flag.StringVar(&PROXY, "proxy", "", "proxy for wrapper and manager")
 	flag.StringVar(&DeviceInfo, "device-info", "Music/5.0.2/Android/10/Pixel 10/7663314/en-US/en-US/dc28071e371c439e", "device info for wrapper")
 	flag.Parse()
 
 	log.SetOutput(os.Stdout)
-	if *debug {
+	if *debug_ {
 		log.SetLevel(log.DebugLevel)
 	} else {
 		log.SetLevel(log.InfoLevel)
@@ -573,17 +623,23 @@ func main() {
 		watcherTicker := time.NewTicker(10 * time.Second)
 		defer watcherTicker.Stop()
 		for range watcherTicker.C {
-			if GlobalManager == nil || !Ready {
+			// 仅做未初始化兜底。不再依赖全局 Ready：Ready 是 all-or-nothing 标志，
+			// 任一账号永久启动失败就会令其恒为 false，从而使 watchdog 对所有实例失效。
+			// 改为逐实例用 IsReady() 判断，未就绪实例自然跳过。
+			if GlobalManager == nil {
 				continue
 			}
 			list := GlobalManager.List()
 			for _, inst := range list {
+				// 尚未就绪（正在登录 / 重启中）的实例不参与健康检查，避免误杀。
+				if !inst.IsReady() {
+					continue
+				}
+
 				inst.RecoverM3U8Health(5)
 
-				inst.Lock()
-				client := inst.Client
-				m3Health := inst.M3U8Health
-				inst.Unlock()
+				client := inst.GetClient()
+				m3Health := inst.GetM3U8Health()
 
 				isClientBroken := client != nil && client.IsBroken()
 				isM3U8Unresponsive := m3Health <= 0
@@ -639,6 +695,10 @@ func main() {
 		MinTime:             5 * time.Minute, // 客户端如果自行发送 ping, 频率至少要隔 5 分钟
 		PermitWithoutStream: true,            // 允许客户端在没有任何 active stream（完全挂机）的时候给服务端发 Ping 续命
 	}))
+	// panic-recovery 拦截器：handler 内的意外 panic（如 Apple 响应结构变化引发的断言失败）
+	// 转为 gRPC 错误返回，避免拖垮整个进程。
+	opts = append(opts, grpc.UnaryInterceptor(recoveryUnaryInterceptor))
+	opts = append(opts, grpc.StreamInterceptor(recoveryStreamInterceptor))
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterWrapperManagerServiceServer(grpcServer, newServer())
 	reflection.Register(grpcServer)

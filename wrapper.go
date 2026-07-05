@@ -19,10 +19,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func parseStorefrontID(id string) string {
+func parseStorefrontID(id string) (string, error) {
 	sfID, err := strconv.Atoi(strings.Split(id, "-")[0])
 	if err != nil {
-		panic(err)
+		return "", fmt.Errorf("invalid storefront id %q: %w", id, err)
 	}
 	type StorefrontMapping struct {
 		Name         string `json:"name"`
@@ -32,18 +32,17 @@ func parseStorefrontID(id string) string {
 	var mapping []StorefrontMapping
 	file, err := os.ReadFile("data/storefront_ids.json")
 	if err != nil {
-		panic(err)
+		return "", fmt.Errorf("read storefront_ids.json: %w", err)
 	}
-	err = json.Unmarshal(file, &mapping)
-	if err != nil {
-		panic(err)
+	if err := json.Unmarshal(file, &mapping); err != nil {
+		return "", fmt.Errorf("parse storefront_ids.json: %w", err)
 	}
 	for _, element := range mapping {
 		if element.StorefrontId == sfID {
-			return element.Code
+			return element.Code, nil
 		}
 	}
-	return ""
+	return "", fmt.Errorf("storefront id %d not found in mapping", sfID)
 }
 
 func PrepareWrapper(mirror bool) {
@@ -72,7 +71,9 @@ func WrapperInitial(account string, password string) {
 	id := uuid.NewV5(uuid.FromStringOrNil("77777777-7777-7777-7777-77777777"), account)
 	err := os.MkdirAll("data/wrapper/rootfs/data/instances/"+id.String(), 0755)
 	if err != nil {
-		panic(err)
+		log.Errorf("failed to create instance dir for %s: %v", id.String(), err)
+		go LoginFailedHandler(id.String())
+		return
 	}
 
 	instance := WrapperInstance{
@@ -102,7 +103,11 @@ func WrapperInitial(account string, password string) {
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		panic(err)
+		log.Errorf("failed to start wrapper for %s: %v", instance.Id, err)
+		ReleasePort(instance.DecryptPort)
+		ReleasePort(instance.M3U8Port)
+		go LoginFailedHandler(instance.Id)
+		return
 	}
 	defer func() { _ = ptmx.Close() }()
 
@@ -144,7 +149,10 @@ func WrapperStart(id string, crashTimes []time.Time) {
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		panic(err)
+		// 启动失败：进程未运行，直接走 wrapperDown 触发受崩溃环保护的重启逻辑。
+		log.Errorf("failed to start wrapper for %s: %v", instance.Id, err)
+		go wrapperDown(&instance)
+		return
 	}
 	defer func() { _ = ptmx.Close() }()
 
@@ -182,25 +190,32 @@ func handleOutput(reader io.Reader, instance *WrapperInstance) {
 func wrapperReady(instance *WrapperInstance) {
 	storefrontID, err := os.ReadFile(fmt.Sprintf("data/wrapper/rootfs/data/instances/%s/STOREFRONT_ID", instance.Id))
 	if err != nil {
-		panic(err)
+		log.Errorf("[wrapper %s] failed to read STOREFRONT_ID, killing to trigger restart: %v",
+			strings.Split(instance.Id, "-")[0], err)
+		killProcess(instance)
+		return
 	}
-	region := parseStorefrontID(string(storefrontID))
+	region, err := parseStorefrontID(string(storefrontID))
+	if err != nil {
+		log.Errorf("[wrapper %s] failed to parse STOREFRONT_ID, killing to trigger restart: %v",
+			strings.Split(instance.Id, "-")[0], err)
+		killProcess(instance)
+		return
+	}
 	instance.Lock()
 	instance.Region = region
+	instance.Unlock()
 
 	// Initialize DecryptClient
 	client, err := NewDecryptClient(instance.DecryptPort)
 	if err != nil {
 		log.Errorf("failed to create decrypt client for instance %s: %v", instance.Id, err)
-		instance.Unlock()
 		return
 	}
-	instance.Client = client
-	instance.Ready = true
-	instance.Unlock()
+	instance.SetClient(client)
+	instance.SetReady(true)
 
 	GlobalManager.Add(instance)
-	// WMDispatcher.AddInstance(instance) // Removed
 
 	instance.NoRestart = false
 	go LoginDoneHandler(instance.Id)
@@ -210,11 +225,9 @@ func wrapperReady(instance *WrapperInstance) {
 	readyCount := 0
 	list := GlobalManager.List()
 	for _, inst := range list {
-		inst.Lock()
-		if inst.Ready {
+		if inst.IsReady() {
 			readyCount++
 		}
-		inst.Unlock()
 	}
 	if readyCount == ShouldStartInstances {
 		Ready = true
@@ -224,13 +237,16 @@ func wrapperReady(instance *WrapperInstance) {
 func wrapperDown(instance *WrapperInstance) {
 	log.Info(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), " Wrapper Down")
 
-	instance.Lock()
-	if instance.Client != nil {
-		instance.Client.Close()
-		instance.Client = nil
+	if client := instance.GetClient(); client != nil {
+		client.Close()
+		instance.SetClient(nil)
 	}
-	instance.Ready = false
-	instance.Unlock()
+	instance.SetReady(false)
+
+	// 进程已退出，其占用的端口可以归还。无论是否重启都先释放：
+	// 重启路径（WrapperStart）会重新分配新端口，否则会造成端口只增不减的泄漏。
+	ReleasePort(instance.DecryptPort)
+	ReleasePort(instance.M3U8Port)
 
 	// Only remove from GlobalManager if we are genuinely not restarting (like on Logout or initial Failure).
 	// If it's going to restart, we keep it in the manager so it isn't lost from instances.json dumps.
@@ -271,26 +287,31 @@ func KillWrapper(id string) error {
 	if instance == nil {
 		return fmt.Errorf("instance %s not found", id)
 	}
+	return killProcess(instance)
+}
+
+// killProcess 直接杀掉实例进程，无需先在 GlobalManager 中注册。
+// 用于实例尚未 Add 到管理器（如 wrapperReady 早期失败）时触发 wrapperDown 重启流程。
+func killProcess(instance *WrapperInstance) error {
 	if instance.Cmd == nil {
-		return fmt.Errorf("instance %s cmd is nil", id)
+		return fmt.Errorf("instance %s cmd is nil", instance.Id)
 	}
 	if instance.Cmd.Process == nil {
-		return fmt.Errorf("instance %s process is nil", id)
+		return fmt.Errorf("instance %s process is nil", instance.Id)
 	}
 	return instance.Cmd.Process.Kill()
 }
 
-func provide2FACode(id string, code string) {
-	err := os.WriteFile("data/wrapper/rootfs/data/instances/"+id+"/2fa.txt", []byte(code), 0644)
-	if err != nil {
-		panic(err)
+func provide2FACode(id string, code string) error {
+	if err := os.WriteFile("data/wrapper/rootfs/data/instances/"+id+"/2fa.txt", []byte(code), 0644); err != nil {
+		return fmt.Errorf("write 2fa code for %s: %w", id, err)
 	}
+	return nil
 }
 
 func RemoveWrapperData(id string) {
-	err := os.RemoveAll("data/wrapper/rootfs/data/instances/" + id)
-	if err != nil {
-		panic(err)
+	if err := os.RemoveAll("data/wrapper/rootfs/data/instances/" + id); err != nil {
+		log.Errorf("failed to remove wrapper data for %s: %v", id, err)
 	}
 }
 

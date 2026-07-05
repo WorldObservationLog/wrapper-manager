@@ -8,9 +8,17 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 var GlobalManager *InstanceManager
+
+// scoredCandidate 是实例选择打分的中间结果。
+type scoredCandidate struct {
+	inst  *WrapperInstance
+	score int
+}
 
 type InstanceManager struct {
 	instances      map[string]*WrapperInstance
@@ -188,15 +196,10 @@ func (m *InstanceManager) SelectInstance(adamId string, key string) (*WrapperIns
 
 	// 1. FAST PATH: Stickiness check (affinity)
 	// 本地直达查表：这是恢复 20MB/s 极速解密性能的核心。
-	// 大量并发流媒体请求时，免去数千次的 `HealthPenalty` `SelectInstance` O(N) 遍历以及锁争抢。
-	// 如果实例健康、没坏、并且上一次接待的就是这个目标 adamId，它将具备绝对最高优先级（且不限制排队数量，直接在内存排队）。
+	// 热字段 Ready/Client 已原子化，此处全程无锁，免去 per-instance 锁争抢。
 	for _, inst := range instancesSnapshot {
-		inst.Lock()
-		ready := inst.Ready
-		client := inst.Client
-		inst.Unlock()
-
-		if ready && client != nil && !client.IsBroken() {
+		client := inst.GetClient()
+		if inst.IsReady() && client != nil && !client.IsBroken() {
 			if client.GetTargetAdamId() == adamId && client.GetTargetKey() == key {
 				if !inst.IsUnhealthy() {
 					// 命中缓存，直接放行，吞吐量提升至满带宽。
@@ -206,16 +209,18 @@ func (m *InstanceManager) SelectInstance(adamId string, key string) (*WrapperIns
 		}
 	}
 
-	// Filter out instances that are not ready or are completely unhealthy
-	var validSnapshot []*WrapperInstance
+	// Filter out instances that are not ready or are completely unhealthy.
+	// 过滤阶段一次性取出 client 指针随候选一起携带，后续打分复用同一引用，
+	// 避免二次裸读 inst.Client 造成 data race / nil 解引用。
+	type readyInstance struct {
+		inst   *WrapperInstance
+		client *DecryptClient
+	}
+	var validSnapshot []readyInstance
 	for _, inst := range instancesSnapshot {
-		inst.Lock()
-		ready := inst.Ready
-		client := inst.Client
-		inst.Unlock()
-
-		if ready && client != nil && !client.IsBroken() && !inst.IsUnhealthy() {
-			validSnapshot = append(validSnapshot, inst)
+		client := inst.GetClient()
+		if inst.IsReady() && client != nil && !client.IsBroken() && !inst.IsUnhealthy() {
+			validSnapshot = append(validSnapshot, readyInstance{inst: inst, client: client})
 		}
 	}
 
@@ -226,22 +231,13 @@ func (m *InstanceManager) SelectInstance(adamId string, key string) (*WrapperIns
 	// Calculate scores for all valid candidates
 	const MaxQueueThreshold = 3
 
-	type candidate struct {
-		inst  *WrapperInstance
-		score int
-	}
-
-	var candidates []candidate
-
-	for _, inst := range validSnapshot {
-		client := inst.Client
+	scoreFor := func(client *DecryptClient, inst *WrapperInstance) int {
 		activeTasks := client.GetActiveTasks()
 		targetAdamId := client.GetTargetAdamId()
 		targetKey := client.GetTargetKey()
 		healthPenalty := inst.CalculateHealthPenalty()
 
-		score := int(activeTasks) * 100
-		score += healthPenalty
+		score := int(activeTasks)*100 + healthPenalty
 
 		if targetAdamId == adamId {
 			if key == "" || targetKey == key {
@@ -260,8 +256,13 @@ func (m *InstanceManager) SelectInstance(adamId string, key string) (*WrapperIns
 			// Alien (occupied by another task)
 			score += 999999 // Very heavy penalty
 		}
+		return score
+	}
 
-		candidates = append(candidates, candidate{inst: inst, score: score})
+	var candidates []scoredCandidate
+
+	for _, ri := range validSnapshot {
+		candidates = append(candidates, scoredCandidate{inst: ri.inst, score: scoreFor(ri.client, ri.inst)})
 	}
 
 	// Find the minimum score
@@ -269,20 +270,17 @@ func (m *InstanceManager) SelectInstance(adamId string, key string) (*WrapperIns
 		return nil, fmt.Errorf("no valid candidates after scoring")
 	}
 
-	bestCandidate := candidates[0]
-	for _, c := range candidates[1:] {
-		if c.score < bestCandidate.score {
-			bestCandidate = c
-		}
-	}
-
-	selectedInst := bestCandidate.inst
+	selectedInst := pickMinScore(candidates)
 
 	// 1. Stickiness / Region fast check
 	// We still need to ensure the region supports it if we are switching its context or if it's the first time
 	// If it's already serving this adamId, region was already verified.
-	if selectedInst.Client.GetTargetAdamId() != adamId {
-		available, err := checkAvailableOnRegion(adamId, selectedInst.Region, false)
+	selectedClient := selectedInst.GetClient()
+	if selectedClient == nil {
+		return nil, fmt.Errorf("selected instance client became unavailable")
+	}
+	if selectedClient.GetTargetAdamId() != adamId {
+		available, err := regionCanServe(adamId, selectedInst.Region)
 		if err != nil {
 			return nil, err
 		}
@@ -291,39 +289,39 @@ func (m *InstanceManager) SelectInstance(adamId string, key string) (*WrapperIns
 			// For simplicity and to avoid cascading failures on the fast path, we do a parallel scan of valid candidates
 
 			type regResult struct {
-				inst *WrapperInstance
-				err  error
+				ri  readyInstance
+				err error
 			}
 			candidatesChan := make(chan regResult, len(validSnapshot))
 			var wg sync.WaitGroup
-			for _, inst := range validSnapshot {
+			for _, ri := range validSnapshot {
 				wg.Add(1)
-				go func(instance *WrapperInstance) {
+				go func(ri readyInstance) {
 					defer wg.Done()
-					avail, err := checkAvailableOnRegion(adamId, instance.Region, false)
+					avail, err := regionCanServe(adamId, ri.inst.Region)
 					if err != nil {
-						candidatesChan <- regResult{inst: nil, err: err}
+						candidatesChan <- regResult{err: err}
 						return
 					}
 					if avail {
-						candidatesChan <- regResult{inst: instance, err: nil}
+						candidatesChan <- regResult{ri: ri}
 					}
-				}(inst)
+				}(ri)
 			}
 			go func() {
 				wg.Wait()
 				close(candidatesChan)
 			}()
 
-			var availableCandidates []*WrapperInstance
+			var availableCandidates []readyInstance
 			var lastErr error
 			for res := range candidatesChan {
 				if res.err != nil {
 					lastErr = res.err
 					continue
 				}
-				if res.inst != nil {
-					availableCandidates = append(availableCandidates, res.inst)
+				if res.ri.inst != nil {
+					availableCandidates = append(availableCandidates, res.ri)
 				}
 			}
 
@@ -334,41 +332,41 @@ func (m *InstanceManager) SelectInstance(adamId string, key string) (*WrapperIns
 				return nil, nil // None available in region
 			}
 
-			// Rescore the filtered available instances
-			bestCandidate = candidate{score: 2147483647} // Max int
-			for _, inst := range availableCandidates {
-				client := inst.Client
-				active := client.GetActiveTasks()
-				tId := client.GetTargetAdamId()
-				tKey := client.GetTargetKey()
-				hPenalty := inst.CalculateHealthPenalty()
-
-				s := int(active)*100 + hPenalty
-
-				if tId == adamId {
-					if key == "" || tKey == key {
-						s += 0
-					} else {
-						s += 999999
-					}
-				} else if tId == "" {
-					s += MaxQueueThreshold * 100
-				} else {
-					s += 999999
-				}
-
-				if s < bestCandidate.score {
-					bestCandidate = candidate{inst: inst, score: s}
-				}
+			// Rescore the filtered available instances (reuse scoreFor + random tie-break)
+			var rescored []scoredCandidate
+			for _, ri := range availableCandidates {
+				rescored = append(rescored, scoredCandidate{inst: ri.inst, score: scoreFor(ri.client, ri.inst)})
 			}
-			selectedInst = bestCandidate.inst
+			selectedInst = pickMinScore(rescored)
+			selectedClient = selectedInst.GetClient()
+			if selectedClient == nil {
+				return nil, fmt.Errorf("selected instance client became unavailable")
+			}
 		}
 	}
 
 	// 3. Declare intention before returning to prevent concurrency storms
-	selectedInst.Client.SetTarget(adamId, key)
+	selectedClient.SetTarget(adamId, key)
 
 	return selectedInst, nil
+}
+
+// pickMinScore 返回最小分候选；并列时随机选取，避免突发的不同 track 因确定性
+// tie-break 全部被分配到同一个实例，从而打散负载、提升聚合吞吐。
+func pickMinScore(candidates []scoredCandidate) *WrapperInstance {
+	minScore := candidates[0].score
+	for _, c := range candidates[1:] {
+		if c.score < minScore {
+			minScore = c.score
+		}
+	}
+	var tied []*WrapperInstance
+	for _, c := range candidates {
+		if c.score == minScore {
+			tied = append(tied, c.inst)
+		}
+	}
+	return tied[rand.Intn(len(tied))]
 }
 
 func (m *InstanceManager) SelectInstanceForLyrics(adamId string, language string) *WrapperInstance {
@@ -419,12 +417,8 @@ func (m *InstanceManager) SelectM3U8Instance(adamId string) (*WrapperInstance, e
 
 	var validSnapshot []*WrapperInstance
 	for _, inst := range instancesSnapshot {
-		inst.Lock()
-		ready := inst.Ready
-		client := inst.Client
-		inst.Unlock()
-
-		if ready && client != nil && !client.IsBroken() && !inst.IsUnhealthy() {
+		client := inst.GetClient()
+		if inst.IsReady() && client != nil && !client.IsBroken() && !inst.IsUnhealthy() {
 			validSnapshot = append(validSnapshot, inst)
 		}
 	}
@@ -452,7 +446,7 @@ func (m *InstanceManager) SelectM3U8Instance(adamId string) (*WrapperInstance, e
 		wg.Add(1)
 		go func(instance *WrapperInstance) {
 			defer wg.Done()
-			avail, err := checkAvailableOnRegion(adamId, instance.Region, false)
+			avail, err := regionCanServe(adamId, instance.Region)
 			if err != nil {
 				candidatesChan <- regResult{inst: nil, err: err}
 				return
@@ -508,11 +502,7 @@ func (m *InstanceManager) SelectWebInstance(adamId string) (*WrapperInstance, er
 
 	var validSnapshot []*WrapperInstance
 	for _, inst := range instancesSnapshot {
-		inst.Lock()
-		ready := inst.Ready
-		inst.Unlock()
-
-		if ready {
+		if inst.IsReady() {
 			validSnapshot = append(validSnapshot, inst)
 		}
 	}
@@ -532,7 +522,7 @@ func (m *InstanceManager) SelectWebInstance(adamId string) (*WrapperInstance, er
 		wg.Add(1)
 		go func(instance *WrapperInstance) {
 			defer wg.Done()
-			avail, err := checkAvailableOnRegion(adamId, instance.Region, false)
+			avail, err := regionCanServe(adamId, instance.Region)
 			if err != nil {
 				candidatesChan <- regResult{inst: nil, err: err}
 				return
@@ -572,42 +562,30 @@ func (m *InstanceManager) SelectWebInstance(adamId string) (*WrapperInstance, er
 
 func (m *InstanceManager) StopAll() {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 标记关停：后续来自 wrapperDown 的 Save() 将变为 no-op，
+	// 以本次持久化的快照为最终状态，避免被进程退出回调覆盖。
 	m.shutdown = true
-	// We save before killing to ensure current state is persisted
-	// Since shutdown is true, subsequent Save calls (from wrapperDown) will be no-ops
-	m.mu.Unlock() // Unlock to call explicit internal save logic if needed, but we already have strict logic.
 
-	// Force save once before killing?
-	// Actually Save() checks shutdown flag.
-	// So we should save BEFORE setting shutdown=true?
-	// But StopAll is called during shutdown.
-	// Let's manually save.
-
-	manualSave := func() {
-		m.mu.RLock()
-		defer m.mu.RUnlock()
-		list := make([]*WrapperInstance, 0, len(m.instances))
-		for _, inst := range m.instances {
-			list = append(list, inst)
-		}
-		data, err := json.Marshal(list)
-		if err != nil {
-			fmt.Printf("failed to marshal instances: %v\n", err)
-			return
-		}
-		err = os.WriteFile("data/instances.json", data, 0644)
-		if err != nil {
-			fmt.Printf("failed to save instances: %v\n", err)
-		}
-	}
-	manualSave()
-
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	// 快照当前实例，原子持久化（复用 AtomicWriteFile，与 Save 保持一致）。
+	list := make([]*WrapperInstance, 0, len(m.instances))
 	for _, inst := range m.instances {
+		list = append(list, inst)
+	}
+	if data, err := json.Marshal(list); err != nil {
+		log.Errorf("StopAll: failed to marshal instances: %v", err)
+	} else if err := AtomicWriteFile("data/instances.json", data); err != nil {
+		log.Errorf("StopAll: failed to save instances: %v", err)
+	}
+
+	// 杀掉所有 wrapper 进程。
+	for _, inst := range list {
 		if inst.Cmd != nil && inst.Cmd.Process != nil {
-			fmt.Printf("Stopping wrapper %s\n", inst.Id)
-			inst.Cmd.Process.Kill()
+			log.Infof("Stopping wrapper %s", inst.Id)
+			if err := inst.Cmd.Process.Kill(); err != nil {
+				log.Errorf("StopAll: failed to kill wrapper %s: %v", inst.Id, err)
+			}
 		}
 	}
 }

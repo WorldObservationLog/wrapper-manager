@@ -3,22 +3,27 @@ package main
 import (
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type WrapperInstance struct {
-	Id                      string         `json:"id"`
-	Region                  string         `json:"region"`
-	DecryptPort             int            `json:"-"`
-	M3U8Port                int            `json:"-"`
-	M3U8Health              int32          `json:"-"`
-	LastM3U8Error           time.Time      `json:"-"`
-	NoRestart               bool           `json:"-"`
-	Cmd                     *exec.Cmd      `json:"-"`
-	Client                  *DecryptClient `json:"-"`
-	Ready                   bool           `json:"-"`
-	CrashTimes              []time.Time    `json:"-"`
-	mu                      sync.Mutex
+	Id            string    `json:"id"`
+	Region        string    `json:"region"`
+	DecryptPort   int       `json:"-"`
+	M3U8Port      int       `json:"-"`
+	M3U8Health    int32     `json:"-"`
+	LastM3U8Error time.Time `json:"-"`
+	NoRestart     bool      `json:"-"`
+	Cmd           *exec.Cmd `json:"-"`
+
+	// 热路径字段：选择阶段每 sample 高频读取，改为原子访问以避免 per-instance 锁争抢。
+	client atomic.Pointer[DecryptClient]
+	ready  atomic.Bool
+
+	CrashTimes []time.Time `json:"-"`
+	// mu 仅保护 CrashTimes / M3U8Health / LastM3U8Error 等复合状态。
+	mu sync.Mutex
 }
 
 func (w *WrapperInstance) Lock() {
@@ -27,6 +32,23 @@ func (w *WrapperInstance) Lock() {
 
 func (w *WrapperInstance) Unlock() {
 	w.mu.Unlock()
+}
+
+// GetClient / SetClient / IsReady / SetReady 提供热字段的无锁原子访问。
+func (w *WrapperInstance) GetClient() *DecryptClient {
+	return w.client.Load()
+}
+
+func (w *WrapperInstance) SetClient(c *DecryptClient) {
+	w.client.Store(c)
+}
+
+func (w *WrapperInstance) IsReady() bool {
+	return w.ready.Load()
+}
+
+func (w *WrapperInstance) SetReady(v bool) {
+	w.ready.Store(v)
 }
 
 // Ensure the score reflects crashes within the last 15 minutes.

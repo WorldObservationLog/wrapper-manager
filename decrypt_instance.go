@@ -51,6 +51,10 @@ func NewDecryptClient(port int) (*DecryptClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial after 5 retries: %w", err)
 	}
+	// 关闭 Nagle：解密为请求-应答式小包交互，避免 4 字节长度前缀等被攒包延迟。
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetNoDelay(true)
+	}
 	client := &DecryptClient{
 		port:           port,
 		conn:           conn,
@@ -164,16 +168,15 @@ func (d *DecryptClient) decrypt(sample []byte) ([]byte, error) {
 		return nil, err
 	}
 	defer d.conn.SetDeadline(time.Time{})
-	err := binary.Write(d.conn, binary.LittleEndian, uint32(len(sample)))
-	if err != nil {
-		return nil, err
-	}
-	_, err = d.conn.Write(sample)
-	if err != nil {
+	// 合并 4 字节长度前缀与 payload 为单次 Write，减少高频小 sample 场景下的 syscall 数。
+	buf := make([]byte, 4+len(sample))
+	binary.LittleEndian.PutUint32(buf[:4], uint32(len(sample)))
+	copy(buf[4:], sample)
+	if _, err := d.conn.Write(buf); err != nil {
 		return nil, err
 	}
 	de := make([]byte, len(sample))
-	_, err = io.ReadFull(d.conn, de)
+	_, err := io.ReadFull(d.conn, de)
 	if err != nil {
 		return nil, err
 	}
@@ -184,40 +187,26 @@ func (d *DecryptClient) switchContext(adamId string, key string) error {
 	if err := d.conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return err
 	}
-	defer d.conn.SetDeadline(time.Time{}) // time.Time{}
+	defer d.conn.SetDeadline(time.Time{})
+
+	// 将 reset 标记、adamId、key 的多段小写入合并到一个缓冲区一次性发出，减少 syscall。
+	var buf []byte
 	if d.LastKey != "" {
-		_, err := d.conn.Write([]byte{0, 0, 0, 0})
-		if err != nil {
-			return err
-		}
+		buf = append(buf, 0, 0, 0, 0)
 	}
+	id := adamId
 	if key == prefetchKey {
-		_, err := d.conn.Write([]byte{byte(len(defaultId))})
-		if err != nil {
-			return err
-		}
-		_, err = io.WriteString(d.conn, defaultId)
-		if err != nil {
-			return err
-		}
-	} else {
-		_, err := d.conn.Write([]byte{byte(len(adamId))})
-		if err != nil {
-			return err
-		}
-		_, err = io.WriteString(d.conn, adamId)
-		if err != nil {
-			return err
-		}
+		id = defaultId
 	}
-	_, err := d.conn.Write([]byte{byte(len(key))})
-	if err != nil {
+	buf = append(buf, byte(len(id)))
+	buf = append(buf, id...)
+	buf = append(buf, byte(len(key)))
+	buf = append(buf, key...)
+
+	if _, err := d.conn.Write(buf); err != nil {
 		return err
 	}
-	_, err = io.WriteString(d.conn, key)
-	if err != nil {
-		return err
-	}
+
 	d.stateMu.Lock()
 	d.LastAdamId = adamId
 	d.LastKey = key

@@ -9,6 +9,17 @@ import (
 	"net/http"
 )
 
+type webPlaybackResp struct {
+	Errors   []any `json:"errors"`
+	SongList []struct {
+		HLSPlaylistURL string `json:"hls-playlist-url"`
+		Assets         []struct {
+			Flavor string `json:"flavor"`
+			URL    string `json:"URL"`
+		} `json:"assets"`
+	} `json:"songList"`
+}
+
 func GetWebPlayback(adamId string, token string, musicToken string) (string, error) {
 	reqBody, err := json.Marshal(map[string]string{"salableAdamId": adamId})
 	if err != nil {
@@ -30,24 +41,32 @@ func GetWebPlayback(adamId string, token string, musicToken string) (string, err
 	if err != nil {
 		return "", err
 	}
-	var bodyJson map[string]any
-	err = json.Unmarshal(respBody, &bodyJson)
-	if err != nil {
+	var bodyJson webPlaybackResp
+	if err := json.Unmarshal(respBody, &bodyJson); err != nil {
 		return "", err
 	}
-	if bodyJson["errors"] != nil {
+	if len(bodyJson.Errors) > 0 {
 		return "", errors.New("failed to get asset")
 	}
-	if playlist, ok := bodyJson["songList"].([]any)[0].(map[string]interface{})["hls-playlist-url"]; ok {
-		return playlist.(string), nil
+	if len(bodyJson.SongList) == 0 {
+		return "", errors.New("no available asset")
 	}
-	assets := bodyJson["songList"].([]any)[0].(map[string]interface{})["assets"].([]any)
-	for _, asset := range assets {
-		if asset.(map[string]interface{})["flavor"].(string) == "28:ctrp256" {
-			return asset.(map[string]interface{})["URL"].(string), nil
+	song := bodyJson.SongList[0]
+	if song.HLSPlaylistURL != "" {
+		return song.HLSPlaylistURL, nil
+	}
+	for _, asset := range song.Assets {
+		if asset.Flavor == "28:ctrp256" {
+			return asset.URL, nil
 		}
 	}
 	return "", errors.New("no available asset")
+}
+
+type licenseResp struct {
+	Errors     []any   `json:"errors"`
+	License    string  `json:"license"`
+	RenewAfter float64 `json:"renew-after"`
 }
 
 func GetLicense(adamId string, challenge string, uri string, token string, musicToken string) (string, int, error) {
@@ -71,18 +90,15 @@ func GetLicense(adamId string, challenge string, uri string, token string, music
 	if err != nil {
 		return "", 0, err
 	}
-	var respJson map[string]any
-	err = json.Unmarshal(respBody, &respJson)
-	if err != nil {
+	var respJson licenseResp
+	if err := json.Unmarshal(respBody, &respJson); err != nil {
 		return "", 0, err
 	}
-	if respJson["errors"] != nil {
+	if len(respJson.Errors) > 0 {
 		return "", 0, errors.New("failed to get license")
 	}
-	if respJson["license"] == nil {
+	if respJson.License == "" {
 		return "", 0, errors.New("failed to get license")
 	}
-	license := respJson["license"].(string)
-	renew := int(respJson["renew-after"].(float64))
-	return license, renew, nil
+	return respJson.License, int(respJson.RenewAfter), nil
 }

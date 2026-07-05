@@ -47,3 +47,14 @@ func GenerateUniquePort() int {
 		return port
 	}
 }
+
+// ReleasePort 归还端口到可用池。实例进程退出后调用，避免反复重启导致端口耗尽。
+// port <= 0 表示从未成功分配，直接忽略。
+func ReleasePort(port int) {
+	if port <= 0 {
+		return
+	}
+	portMutex.Lock()
+	defer portMutex.Unlock()
+	delete(usedPorts, port)
+}
