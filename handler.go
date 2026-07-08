@@ -11,8 +11,18 @@ import (
 var LoginConnMap = sync.Map{}
 
 func Login2FAHandler(id string) {
-	conn, _ := LoginConnMap.Load(id)
-	err := conn.(grpc.BidiStreamingServer[pb.LoginRequest, pb.LoginReply]).Send(
+	conn, ok := LoginConnMap.Load(id)
+	if !ok || conn == nil {
+		// 无对应登录流（时序异常/重启后重复触发）。不做断言，避免 nil 断言 panic 崩溃进程。
+		log.Printf("Login2FAHandler: no pending login stream for %s", id)
+		return
+	}
+	stream, ok := conn.(grpc.BidiStreamingServer[pb.LoginRequest, pb.LoginReply])
+	if !ok {
+		log.Printf("Login2FAHandler: unexpected conn type for %s", id)
+		return
+	}
+	err := stream.Send(
 		&pb.LoginReply{
 			Header: &pb.ReplyHeader{
 				Code: 2,
@@ -27,10 +37,11 @@ func Login2FAHandler(id string) {
 func LoginDoneHandler(id string) {
 	GlobalManager.Save()
 	conn, _ := LoginConnMap.LoadAndDelete(id)
-	if conn == nil {
+	stream, ok := conn.(grpc.BidiStreamingServer[pb.LoginRequest, pb.LoginReply])
+	if !ok {
 		return
 	}
-	err := conn.(grpc.BidiStreamingServer[pb.LoginRequest, pb.LoginReply]).Send(
+	err := stream.Send(
 		&pb.LoginReply{
 			Header: &pb.ReplyHeader{
 				Code: 0,
@@ -45,10 +56,11 @@ func LoginDoneHandler(id string) {
 func LoginFailedHandler(id string) {
 	RemoveWrapperData(id)
 	conn, _ := LoginConnMap.LoadAndDelete(id)
-	if conn == nil {
+	stream, ok := conn.(grpc.BidiStreamingServer[pb.LoginRequest, pb.LoginReply])
+	if !ok {
 		return
 	}
-	err := conn.(grpc.BidiStreamingServer[pb.LoginRequest, pb.LoginReply]).Send(
+	err := stream.Send(
 		&pb.LoginReply{
 			Header: &pb.ReplyHeader{
 				Code: -1,

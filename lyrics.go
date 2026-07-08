@@ -19,8 +19,16 @@ var (
 func GetHttpClient() *http.Client {
 	httpClientOnce.Do(func() {
 		if PROXY == "" {
+			transport := &http.Transport{
+				// 与代理路径保持一致，防止 SelectM3U8Instance 并发 fan-out 时连接池成为瓶颈。
+				// DefaultTransport 的 MaxIdleConnsPerHost=2，在多实例并发区域探测下严重不足。
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 100,
+				IdleConnTimeout:     90 * time.Second,
+			}
 			globalHttpClient = &http.Client{
-				Timeout: 30 * time.Second,
+				Transport: transport,
+				Timeout:   30 * time.Second,
 			}
 		} else {
 			proxyUrl, err := url.Parse(PROXY)

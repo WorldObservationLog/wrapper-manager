@@ -47,6 +47,10 @@ func GetToken() (string, error) {
 
 	regex := regexp.MustCompile(`/assets/index~[^/]+\.js`)
 	indexJsUri := regex.FindString(string(body))
+	if indexJsUri == "" {
+		// 未能从首页定位到 index JS：Apple 改版或响应异常。不缓存，下次重试。
+		return "", fmt.Errorf("failed to locate index js in music.apple.com homepage")
+	}
 
 	req, err = http.NewRequest("GET", "https://music.apple.com"+indexJsUri, nil)
 	if err != nil {
@@ -70,6 +74,12 @@ func GetToken() (string, error) {
 
 	regex = regexp.MustCompile(`eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+`)
 	token := regex.FindString(string(body))
+	if token == "" {
+		// 关键修复：抓取失败时绝不缓存空 token。
+		// 否则空串会被缓存 24h，导致此后所有 amp-api 请求持续 401，
+		// 表现为长时间运行后 M3U8/Lyrics/WebPlayback 全线 "no available instance"。
+		return "", fmt.Errorf("failed to extract bearer token from index js (apple may have changed page structure)")
+	}
 
 	cache.Add("token", token)
 

@@ -123,6 +123,10 @@ func WrapperInitial(account string, password string) {
 }
 
 func WrapperStart(id string, crashTimes []time.Time) {
+	WrapperStartWithBackoff(id, crashTimes, 0)
+}
+
+func WrapperStartWithBackoff(id string, crashTimes []time.Time, backoffGen int) {
 	instance := WrapperInstance{
 		Id:          id,
 		DecryptPort: GenerateUniquePort(),
@@ -130,6 +134,7 @@ func WrapperStart(id string, crashTimes []time.Time) {
 		M3U8Health:  100,
 		NoRestart:   false,
 		CrashTimes:  crashTimes,
+		BackoffGen:  backoffGen,
 	}
 
 	args := []string{
@@ -165,6 +170,11 @@ func WrapperStart(id string, crashTimes []time.Time) {
 }
 
 func handleOutput(reader io.Reader, instance *WrapperInstance) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("[wrapper %s] panic in handleOutput: %v", strings.Split(instance.Id, "-")[0], r)
+		}
+	}()
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -206,14 +216,24 @@ func wrapperReady(instance *WrapperInstance) {
 	instance.Region = region
 	instance.Unlock()
 
+	// 若进程已在我们初始化期间退出，放弃注册——wrapperDown 会负责重启。
+	// 避免 wrapperReady/wrapperDown 竞态导致幽灵实例（Ready=true、端口已释放、进程已死）。
+	if instance.Cmd == nil || instance.Cmd.ProcessState != nil {
+		log.Warnf("[wrapper %s] process already exited before wrapperReady completed, aborting registration",
+			strings.Split(instance.Id, "-")[0])
+		return
+	}
+
 	// Initialize DecryptClient
 	client, err := NewDecryptClient(instance.DecryptPort)
 	if err != nil {
-		log.Errorf("failed to create decrypt client for instance %s: %v", instance.Id, err)
+		log.Errorf("failed to create decrypt client for instance %s, killing to trigger restart: %v", instance.Id, err)
+		killProcess(instance)
 		return
 	}
 	instance.SetClient(client)
 	instance.SetReady(true)
+	instance.BackoffGen = 0
 
 	GlobalManager.Add(instance)
 
@@ -268,11 +288,17 @@ func wrapperDown(instance *WrapperInstance) {
 		newCrashTimes = append(newCrashTimes, now)
 
 		if len(newCrashTimes) >= 5 {
-			log.Errorf("Wrapper %s crashed %d times in 1 minute, stopping restart. Data kept in instances.json", instance.Id, len(newCrashTimes))
-			// We don't restart, effectively stopping it, but DO NOT REMOVE the account data.
-
-			// Ensure we save the state (Ready=false)
+			delay := time.Duration(1<<instance.BackoffGen) * time.Minute
+			if delay > 15*time.Minute {
+				delay = 15 * time.Minute
+			}
+			nextGen := instance.BackoffGen + 1
+			log.Errorf("Wrapper %s crashed %d times in 1 minute, retrying in %v (backoff gen %d)", instance.Id, len(newCrashTimes), delay, nextGen)
 			GlobalManager.Save()
+			go func() {
+				time.Sleep(delay)
+				WrapperStartWithBackoff(instance.Id, nil, nextGen)
+			}()
 			return
 		}
 

@@ -75,9 +75,12 @@ func (d *Dispatcher) Submit(task *Task) {
 			return
 		}
 
-		// Process failed (e.g., node network broken).
-		// The node is marked broken and its score is penalized.
-		// Next iteration will automatically pick another healthy node.
+		// Process failed — the client is now marked broken.
+		// Proactively kill the wrapper so cmd.Wait() returns and wrapperDown fires restart
+		// immediately, rather than waiting up to 10s for the watchdog cycle.
+		if client.IsBroken() {
+			go KillWrapper(inst.Id)
+		}
 		lastErr = opErr
 		time.Sleep(100 * time.Millisecond)
 	}

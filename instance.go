@@ -22,6 +22,7 @@ type WrapperInstance struct {
 	ready  atomic.Bool
 
 	CrashTimes []time.Time `json:"-"`
+	BackoffGen int         `json:"-"`
 	// mu 仅保护 CrashTimes / M3U8Health / LastM3U8Error 等复合状态。
 	mu sync.Mutex
 }

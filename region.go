@@ -86,7 +86,12 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 		}
 
 		available := respJson["data"] != nil
-		SongRegionCache.Add(cacheKey, available)
+		// 只缓存"确认可用"的结果（true）。
+		// false 意味着当前 region 不可用，但这可能是实例重启、短暂下线或临时限制，
+		// 缓存 false 会导致该 track 在该 region 被屏蔽长达 TTL（24h），不缓存则每次重新探测。
+		if available {
+			SongRegionCache.Add(cacheKey, true)
+		}
 		return available, nil
 	})
 

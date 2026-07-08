@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,53 +11,67 @@ import (
 	"time"
 )
 
-func GetM3U8(instance *WrapperInstance, adamId string) (string, error) {
+func GetM3U8(ctx context.Context, instance *WrapperInstance, adamId string) (string, error) {
+	// 用 context deadline 和固定超时中取较早的那个，客户端取消可立即退出。
+	deadline := time.Now().Add(8 * time.Second)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
 
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", instance.M3U8Port), 5*time.Second)
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", instance.M3U8Port))
 	if err != nil {
 		instance.ReportM3U8Error()
-		return "", fmt.Errorf("dial timeout or error: %w", err)
+		instance.SetReady(false)
+		go KillWrapper(instance.Id)
+		return "", fmt.Errorf("dial error: %w", err)
 	}
 	defer conn.Close()
 
-	deadline := time.Now().Add(10 * time.Second)
-
-	if err := conn.SetWriteDeadline(deadline); err != nil {
+	if err := conn.SetDeadline(deadline); err != nil {
 		instance.ReportM3U8Error()
-		return "", fmt.Errorf("set write deadline error: %w", err)
+		return "", fmt.Errorf("set deadline error: %w", err)
 	}
 
 	_, err = conn.Write([]byte{byte(len(adamId))})
 	if err != nil {
 		instance.ReportM3U8Error()
-		return "", fmt.Errorf("conn write 1 error: %w", err)
+		if isTimeout(err) {
+			instance.SetReady(false)
+			go KillWrapper(instance.Id)
+		}
+		return "", fmt.Errorf("conn write error: %w", err)
 	}
 
 	_, err = io.WriteString(conn, adamId)
 	if err != nil {
 		instance.ReportM3U8Error()
-		return "", fmt.Errorf("conn write 2 (WriteString) error: %w", err)
-	}
-
-	if err := conn.SetReadDeadline(deadline); err != nil {
-		instance.ReportM3U8Error()
-		return "", fmt.Errorf("set read deadline error: %w", err)
+		if isTimeout(err) {
+			instance.SetReady(false)
+			go KillWrapper(instance.Id)
+		}
+		return "", fmt.Errorf("conn write error: %w", err)
 	}
 
 	response, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil {
 		instance.ReportM3U8Error()
+		if isTimeout(err) {
+			instance.SetReady(false)
+			go KillWrapper(instance.Id)
+		}
 		return "", fmt.Errorf("conn read error: %w", err)
 	}
 
-	_ = conn.SetReadDeadline(time.Time{})
-
 	if len(response) > 0 {
-		response = bytes.TrimSpace(response)
 		instance.ReportM3U8Success()
-		return string(response), nil
-	} else {
-		instance.ReportM3U8Error()
-		return "", errors.New("empty response")
+		return string(bytes.TrimSpace(response)), nil
 	}
+	instance.ReportM3U8Error()
+	return "", errors.New("empty response")
+}
+
+func isTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }

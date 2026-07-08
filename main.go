@@ -300,7 +300,7 @@ func (s *server) M3U8(c context.Context, req *pb.M3U8Request) (*pb.M3U8Reply, er
 			},
 		}, nil
 	}
-	m3u8, err := GetM3U8(instance, req.Data.AdamId)
+	m3u8, err := GetM3U8(c, instance, req.Data.AdamId)
 	if err != nil {
 		GlobalManager.ReportFailure(req.Data.AdamId, instance.Id)
 		return &pb.M3U8Reply{
@@ -607,62 +607,76 @@ func main() {
 	}
 
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			bytesC := decryptBytes.Swap(0)
-			countC := decryptCount.Swap(0)
-			if countC > 0 {
-				speedMB := float64(bytesC) / 1024.0 / 1024.0 / 5.0
-				log.Infof("Decryption Speed: %.2f MB/s | %d samples processed in last 5s (%.1f req/s)", speedMB, countC, float64(countC)/5.0)
-			}
+		for {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Errorf("panic in speed monitor: %v\n%s", r, debug.Stack())
+					}
+				}()
+				ticker := time.NewTicker(5 * time.Second)
+				defer ticker.Stop()
+				for range ticker.C {
+					bytesC := decryptBytes.Swap(0)
+					countC := decryptCount.Swap(0)
+					if countC > 0 {
+						speedMB := float64(bytesC) / 1024.0 / 1024.0 / 5.0
+						log.Infof("Decryption Speed: %.2f MB/s | %d samples processed in last 5s (%.1f req/s)", speedMB, countC, float64(countC)/5.0)
+					}
+				}
+			}()
+			time.Sleep(time.Second)
 		}
 	}()
 
 	go func() {
-		watcherTicker := time.NewTicker(10 * time.Second)
-		defer watcherTicker.Stop()
-		for range watcherTicker.C {
-			// 仅做未初始化兜底。不再依赖全局 Ready：Ready 是 all-or-nothing 标志，
-			// 任一账号永久启动失败就会令其恒为 false，从而使 watchdog 对所有实例失效。
-			// 改为逐实例用 IsReady() 判断，未就绪实例自然跳过。
-			if GlobalManager == nil {
-				continue
-			}
-			list := GlobalManager.List()
-			for _, inst := range list {
-				// 尚未就绪（正在登录 / 重启中）的实例不参与健康检查，避免误杀。
-				if !inst.IsReady() {
-					continue
-				}
-
-				inst.RecoverM3U8Health(5)
-
-				client := inst.GetClient()
-				m3Health := inst.GetM3U8Health()
-
-				isClientBroken := client != nil && client.IsBroken()
-				isM3U8Unresponsive := m3Health <= 0
-
-				if isClientBroken || isM3U8Unresponsive {
-					reason := ""
-					if isClientBroken {
-						reason = "DecryptClient is broken"
-					} else {
-						reason = "M3U8 is unresponsive"
+		for {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Errorf("panic in watchdog: %v\n%s", r, debug.Stack())
 					}
-					log.Warnf("Watchdog: Instance %s is dead (%s). Killing wrapper to trigger auto-restart.", inst.Id, reason)
-
-					// Force kill to unblock cmd.Wait() in wrapperStart()
-					err := KillWrapper(inst.Id)
-					if err != nil {
-						log.Errorf("Watchdog: Failed to kill instance %s: %v", inst.Id, err)
+				}()
+				watcherTicker := time.NewTicker(10 * time.Second)
+				defer watcherTicker.Stop()
+				for range watcherTicker.C {
+					if GlobalManager == nil {
+						continue
 					}
-				}
-			}
+					list := GlobalManager.List()
+					for _, inst := range list {
+						if !inst.IsReady() {
+							continue
+						}
 
-			// Clean up memory leaks for old M3U8 failed records
-			GlobalManager.CleanupFailedRecords(15 * time.Minute)
+						m3HealthBefore := inst.GetM3U8Health()
+						inst.RecoverM3U8Health(5)
+
+						client := inst.GetClient()
+
+						isClientBroken := client != nil && client.IsBroken()
+						isM3U8Unresponsive := m3HealthBefore <= 0
+
+						if isClientBroken || isM3U8Unresponsive {
+							reason := ""
+							if isClientBroken {
+								reason = "DecryptClient is broken"
+							} else {
+								reason = "M3U8 is unresponsive"
+							}
+							log.Warnf("Watchdog: Instance %s is dead (%s). Killing wrapper to trigger auto-restart.", inst.Id, reason)
+
+							err := KillWrapper(inst.Id)
+							if err != nil {
+								log.Errorf("Watchdog: Failed to kill instance %s: %v", inst.Id, err)
+							}
+						}
+					}
+
+					GlobalManager.CleanupFailedRecords(15 * time.Minute)
+				}
+			}()
+			time.Sleep(time.Second)
 		}
 	}()
 
