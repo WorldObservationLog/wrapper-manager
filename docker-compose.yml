@@ -5,8 +5,9 @@ services:
     command: [
       "--host", "0.0.0.0",
       "--port", "8080",
-      "--mirror", "false"
+      "--mirror=false"
     ]
+    privileged: true
     ports:
       - "8080:8080"
     volumes:
