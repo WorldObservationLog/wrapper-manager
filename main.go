@@ -569,6 +569,11 @@ func main() {
 	var mirror = flag.Bool("mirror", false, "use mirror to download wrapper and file (for Chinese users)")
 	var debug_ = flag.Bool("debug", false, "enable debug output")
 	var prepare = flag.Bool("prepare", false, "only download required files")
+	var testInstances = flag.Bool("test-instances", false, "test whether saved instances can start, print a report, then exit")
+	var testSource = flag.String("test-source", "json", "test mode instance source: \"json\" (instances.json) or \"dir\" (data/wrapper/rootfs/data/instances)")
+	var testApply = flag.Bool("test-apply", false, "after testing, rewrite instances.json to keep only instances that started successfully")
+	var testTimeout = flag.Int("test-timeout", 120, "per-instance startup timeout in seconds for test mode")
+	var testConcurrency = flag.Int("test-concurrency", 4, "how many instances to test in parallel")
 	flag.StringVar(&PROXY, "proxy", "", "proxy for wrapper and manager")
 	flag.StringVar(&DeviceInfo, "device-info", "Music/5.0.2/Android/10/Pixel 10/7663314/en-US/en-US/dc28071e371c439e", "device info for wrapper")
 	flag.Parse()
@@ -604,6 +609,19 @@ func main() {
 
 	if *prepare {
 		os.Exit(0)
+	}
+
+	if *testInstances {
+		ok := RunInstanceTest(testConfig{
+			source:      *testSource,
+			apply:       *testApply,
+			timeout:     time.Duration(*testTimeout) * time.Second,
+			concurrency: *testConcurrency,
+		})
+		if ok {
+			os.Exit(0)
+		}
+		os.Exit(1)
 	}
 
 	go func() {
@@ -687,7 +705,7 @@ func main() {
 		list := GlobalManager.List()
 		ShouldStartInstances = len(list)
 		for _, inst := range list {
-			go WrapperStart(inst.Id, nil)
+			go WrapperStart(inst.Id)
 		}
 	} else {
 		GlobalManager = NewInstanceManager()

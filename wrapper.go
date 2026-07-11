@@ -122,19 +122,13 @@ func WrapperInitial(account string, password string) {
 	go wrapperDown(&instance)
 }
 
-func WrapperStart(id string, crashTimes []time.Time) {
-	WrapperStartWithBackoff(id, crashTimes, 0)
-}
-
-func WrapperStartWithBackoff(id string, crashTimes []time.Time, backoffGen int) {
+func WrapperStart(id string) {
 	instance := WrapperInstance{
 		Id:          id,
 		DecryptPort: GenerateUniquePort(),
 		M3U8Port:    GenerateUniquePort(),
 		M3U8Health:  100,
 		NoRestart:   false,
-		CrashTimes:  crashTimes,
-		BackoffGen:  backoffGen,
 	}
 
 	args := []string{
@@ -233,7 +227,8 @@ func wrapperReady(instance *WrapperInstance) {
 	}
 	instance.SetClient(client)
 	instance.SetReady(true)
-	instance.BackoffGen = 0
+	// 成功就绪：清空该账号的崩溃历史与退避代数，下次崩溃从最短间隔重新计数。
+	clearCrash(instance.Id)
 
 	GlobalManager.Add(instance)
 
@@ -276,33 +271,26 @@ func wrapperDown(instance *WrapperInstance) {
 	}
 
 	if !instance.NoRestart {
-		// Check crash loop
-		now := time.Now()
-		// Filter out crashes older than 1 minute
-		var newCrashTimes []time.Time
-		for _, t := range instance.CrashTimes {
-			if now.Sub(t) < time.Minute {
-				newCrashTimes = append(newCrashTimes, t)
-			}
+		// 崩溃决策集中在 crashRecords（按账号 id 持久于内存），跨进程重建不丢失。
+		delay, giveUp := recordCrash(instance.Id)
+		if giveUp {
+			// 退避代数已达上限：判定该账号无法恢复（如凭据失效、机器无法访问 Apple），
+			// 停止自动重启，保留数据等待人工介入。不从 GlobalManager 移除，保留在
+			// instances.json 中，重启进程后仍会尝试拉起。
+			log.Errorf("Wrapper %s exceeded max restart backoff, giving up auto-restart. Manual intervention required.", instance.Id)
+			GlobalManager.Save()
+			return
 		}
-		newCrashTimes = append(newCrashTimes, now)
-
-		if len(newCrashTimes) >= 5 {
-			delay := time.Duration(1<<instance.BackoffGen) * time.Minute
-			if delay > 15*time.Minute {
-				delay = 15 * time.Minute
-			}
-			nextGen := instance.BackoffGen + 1
-			log.Errorf("Wrapper %s crashed %d times in 1 minute, retrying in %v (backoff gen %d)", instance.Id, len(newCrashTimes), delay, nextGen)
+		if delay > 0 {
+			log.Errorf("Wrapper %s is crash-looping, retrying in %v", instance.Id, delay)
 			GlobalManager.Save()
 			go func() {
 				time.Sleep(delay)
-				WrapperStartWithBackoff(instance.Id, nil, nextGen)
+				WrapperStart(instance.Id)
 			}()
 			return
 		}
-
-		go WrapperStart(instance.Id, newCrashTimes)
+		go WrapperStart(instance.Id)
 	} else {
 		GlobalManager.Save()
 	}

@@ -21,9 +21,9 @@ type WrapperInstance struct {
 	client atomic.Pointer[DecryptClient]
 	ready  atomic.Bool
 
-	CrashTimes []time.Time `json:"-"`
-	BackoffGen int         `json:"-"`
-	// mu 仅保护 CrashTimes / M3U8Health / LastM3U8Error 等复合状态。
+	// mu 仅保护 M3U8Health / LastM3U8Error 等复合状态。
+	// 崩溃历史 / 退避代数已移至 crash.go 的集中式 crashRecords（按账号 id），
+	// 因为 WrapperInstance 每次重启都会重建，挂在对象上的状态会丢失。
 	mu sync.Mutex
 }
 
@@ -52,41 +52,14 @@ func (w *WrapperInstance) SetReady(v bool) {
 	w.ready.Store(v)
 }
 
-// Ensure the score reflects crashes within the last 15 minutes.
-// Max penalty is applied for recent crashes.
-// If there are 3 or more crashes within the last 15 minutes, it is considered unhealthy.
+// CalculateHealthPenalty / IsUnhealthy 委托给集中式崩溃跟踪器（crash.go）。
+// 崩溃历史按账号 id 维护，跨进程重建保持一致。
 func (w *WrapperInstance) CalculateHealthPenalty() int {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	now := time.Now()
-	penalty := 0
-	for _, t := range w.CrashTimes {
-		age := now.Sub(t)
-		if age <= 15*time.Minute {
-			// e.g. 200 points scaled by how recent it is (0 minutes = 200, 15 minutes = 0)
-			decay := 1.0 - (age.Seconds() / (15 * 60))
-			if decay < 0 {
-				decay = 0
-			}
-			penalty += int(200 * decay)
-		}
-	}
-	return penalty
+	return crashPenalty(w.Id)
 }
 
 func (w *WrapperInstance) IsUnhealthy() bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	now := time.Now()
-	recentCrashes := 0
-	for _, t := range w.CrashTimes {
-		if age := now.Sub(t); age >= 0 && age <= 15*time.Minute {
-			recentCrashes++
-		}
-	}
-	return recentCrashes >= 3
+	return isCrashUnhealthy(w.Id)
 }
 
 func (w *WrapperInstance) ReportM3U8Error() {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -48,17 +49,23 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 			return true, nil
 		}
 
-		var url string
+		var apiUrl string
 		if mv {
-			url = fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/music-videos/%s", region, adamId)
+			apiUrl = fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/music-videos/%s", region, adamId)
 		} else {
-			url = fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s", region, adamId)
+			apiUrl = fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s", region, adamId)
 		}
 		token, err := GetToken()
 		if err != nil {
 			return false, err
 		}
-		req, err := http.NewRequest("GET", url, nil)
+
+		// 独立超时：region 探测是辅助逻辑，不应阻塞主请求太久。
+		// Apple API 正常 1-2s 响应，10s 足以覆盖慢网络；超过则视为不可用。
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", apiUrl, nil)
 		if err != nil {
 			return false, err
 		}
@@ -86,9 +93,6 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 		}
 
 		available := respJson["data"] != nil
-		// 只缓存"确认可用"的结果（true）。
-		// false 意味着当前 region 不可用，但这可能是实例重启、短暂下线或临时限制，
-		// 缓存 false 会导致该 track 在该 region 被屏蔽长达 TTL（24h），不缓存则每次重新探测。
 		if available {
 			SongRegionCache.Add(cacheKey, true)
 		}
