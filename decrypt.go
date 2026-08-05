@@ -79,7 +79,7 @@ func (d *Dispatcher) Submit(task *Task) {
 		// Proactively kill the wrapper so cmd.Wait() returns and wrapperDown fires restart
 		// immediately, rather than waiting up to 10s for the watchdog cycle.
 		if client.IsBroken() {
-			go KillWrapper(inst.Id)
+			go KillWrapper(inst)
 		}
 		lastErr = opErr
 		time.Sleep(100 * time.Millisecond)

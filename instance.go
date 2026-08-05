@@ -18,8 +18,9 @@ type WrapperInstance struct {
 	Cmd           *exec.Cmd `json:"-"`
 
 	// 热路径字段：选择阶段每 sample 高频读取，改为原子访问以避免 per-instance 锁争抢。
-	client atomic.Pointer[DecryptClient]
-	ready  atomic.Bool
+	client  atomic.Pointer[DecryptClient]
+	ready   atomic.Bool
+	defunct atomic.Bool
 
 	// mu 仅保护 M3U8Health / LastM3U8Error 等复合状态。
 	// 崩溃历史 / 退避代数已移至 crash.go 的集中式 crashRecords（按账号 id），
@@ -50,6 +51,18 @@ func (w *WrapperInstance) IsReady() bool {
 
 func (w *WrapperInstance) SetReady(v bool) {
 	w.ready.Store(v)
+}
+
+// MarkDefunct / IsDefunct 标记实例进程已确定退出。
+// wrapperDown 进入时第一件事就置位；wrapperReady 在建立 DecryptClient 后、
+// 写回 Ready 前二次检查，若已 defunct 则放弃注册——消除"进程已死但 Ready=true"
+// 的幽灵实例竞态（NewDecryptClient 期间进程死亡，wrapperDown 先跑而 wrapperReady 晚到）。
+func (w *WrapperInstance) MarkDefunct() {
+	w.defunct.Store(true)
+}
+
+func (w *WrapperInstance) IsDefunct() bool {
+	return w.defunct.Load()
 }
 
 // CalculateHealthPenalty / IsUnhealthy 委托给集中式崩溃跟踪器（crash.go）。

@@ -33,7 +33,7 @@ import (
 var (
 	PROXY                string
 	DeviceInfo           string
-	Ready                bool
+	Ready                atomic.Bool
 	ShouldStartInstances int
 	decryptBytes         atomic.Uint64
 	decryptCount         atomic.Uint64
@@ -71,7 +71,7 @@ func (s *server) Status(c context.Context, req *emptypb.Empty) (*pb.StatusReply,
 			Status:      listCount != 0,
 			Regions:     regions,
 			ClientCount: int32(listCount),
-			Ready:       Ready,
+			Ready:       Ready.Load(),
 		},
 	}, nil
 }
@@ -141,7 +141,7 @@ func (s *server) Logout(c context.Context, req *pb.LogoutRequest) (*pb.LogoutRep
 		}, nil
 	}
 	instance.NoRestart = true
-	err := KillWrapper(instance.Id)
+	err := KillWrapper(instance)
 	if err != nil {
 		return &pb.LogoutReply{
 			Header: &pb.ReplyHeader{
@@ -684,7 +684,7 @@ func main() {
 							}
 							log.Warnf("Watchdog: Instance %s is dead (%s). Killing wrapper to trigger auto-restart.", inst.Id, reason)
 
-							err := KillWrapper(inst.Id)
+							err := KillWrapper(inst)
 							if err != nil {
 								log.Errorf("Watchdog: Failed to kill instance %s: %v", inst.Id, err)
 							}
@@ -692,6 +692,18 @@ func main() {
 					}
 
 					GlobalManager.CleanupFailedRecords(15 * time.Minute)
+
+					// 全局 Ready 反映实例层真实状态：只要至少一个实例就绪即为可用。
+					// 旧逻辑只在 wrapperReady 置 true 且永不置回，会让客户端在全部实例
+					// 不可用时仍看到 Ready=true 而继续发包。
+					anyReady := false
+					for _, inst := range GlobalManager.List() {
+						if inst.IsReady() {
+							anyReady = true
+							break
+						}
+					}
+					Ready.Store(anyReady)
 				}
 			}()
 			time.Sleep(time.Second)
@@ -710,7 +722,7 @@ func main() {
 	} else {
 		GlobalManager = NewInstanceManager()
 		ShouldStartInstances = 0
-		Ready = true
+		Ready.Store(true)
 	}
 
 	log.Printf("wrapperManager running at %s:%d", *host, *port)

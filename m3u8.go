@@ -23,7 +23,7 @@ func GetM3U8(ctx context.Context, instance *WrapperInstance, adamId string) (str
 	if err != nil {
 		instance.ReportM3U8Error()
 		instance.SetReady(false)
-		go KillWrapper(instance.Id)
+		go KillWrapper(instance)
 		return "", fmt.Errorf("dial error: %w", err)
 	}
 	defer conn.Close()
@@ -38,7 +38,7 @@ func GetM3U8(ctx context.Context, instance *WrapperInstance, adamId string) (str
 		instance.ReportM3U8Error()
 		if isTimeout(err) {
 			instance.SetReady(false)
-			go KillWrapper(instance.Id)
+			go KillWrapper(instance)
 		}
 		return "", fmt.Errorf("conn write error: %w", err)
 	}
@@ -48,7 +48,7 @@ func GetM3U8(ctx context.Context, instance *WrapperInstance, adamId string) (str
 		instance.ReportM3U8Error()
 		if isTimeout(err) {
 			instance.SetReady(false)
-			go KillWrapper(instance.Id)
+			go KillWrapper(instance)
 		}
 		return "", fmt.Errorf("conn write error: %w", err)
 	}
@@ -58,7 +58,7 @@ func GetM3U8(ctx context.Context, instance *WrapperInstance, adamId string) (str
 		instance.ReportM3U8Error()
 		if isTimeout(err) {
 			instance.SetReady(false)
-			go KillWrapper(instance.Id)
+			go KillWrapper(instance)
 		}
 		return "", fmt.Errorf("conn read error: %w", err)
 	}

@@ -225,6 +225,18 @@ func wrapperReady(instance *WrapperInstance) {
 		killProcess(instance)
 		return
 	}
+
+	// 二次检查：NewDecryptClient（最多重试 5×100ms）期间进程可能已退出，
+	// wrapperDown 已置 defunct 并释放端口。此时必须放弃注册，否则会产生
+	// "进程已死但 Ready=true" 的幽灵实例（选择器只看 IsReady()，会持续选中它，
+	// 而端口已被释放 → M3U8 Connection refused）。
+	if instance.IsDefunct() || instance.Cmd == nil || instance.Cmd.ProcessState != nil {
+		log.Warnf("[wrapper %s] process exited while initializing decrypt client, aborting registration",
+			strings.Split(instance.Id, "-")[0])
+		client.Close()
+		return
+	}
+
 	instance.SetClient(client)
 	instance.SetReady(true)
 	// 成功就绪：清空该账号的崩溃历史与退避代数，下次崩溃从最短间隔重新计数。
@@ -245,12 +257,17 @@ func wrapperReady(instance *WrapperInstance) {
 		}
 	}
 	if readyCount == ShouldStartInstances {
-		Ready = true
+		Ready.Store(true)
 	}
 }
 
 func wrapperDown(instance *WrapperInstance) {
 	log.Info(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), " Wrapper Down")
+
+	// 第一件事：标记进程已死。wrapperReady 建立 DecryptClient 期间（最长 500ms）
+	// 若进程先退出，wrapperDown 先置 defunct，wrapperReady 二次检查后放弃注册，
+	// 从而避免幽灵实例竞态。
+	instance.MarkDefunct()
 
 	if client := instance.GetClient(); client != nil {
 		client.Close()
@@ -272,15 +289,9 @@ func wrapperDown(instance *WrapperInstance) {
 
 	if !instance.NoRestart {
 		// 崩溃决策集中在 crashRecords（按账号 id 持久于内存），跨进程重建不丢失。
-		delay, giveUp := recordCrash(instance.Id)
-		if giveUp {
-			// 退避代数已达上限：判定该账号无法恢复（如凭据失效、机器无法访问 Apple），
-			// 停止自动重启，保留数据等待人工介入。不从 GlobalManager 移除，保留在
-			// instances.json 中，重启进程后仍会尝试拉起。
-			log.Errorf("Wrapper %s exceeded max restart backoff, giving up auto-restart. Manual intervention required.", instance.Id)
-			GlobalManager.Save()
-			return
-		}
+		// 返回的 delay 为 0 时立即重启，>0 时定时重启。永不永久放弃：
+		// 底层故障（网络/凭据临时失效）恢复后 wrapper 一旦 ready 成功即清空历史。
+		delay := recordCrash(instance.Id)
 		if delay > 0 {
 			log.Errorf("Wrapper %s is crash-looping, retrying in %v", instance.Id, delay)
 			GlobalManager.Save()
@@ -296,11 +307,12 @@ func wrapperDown(instance *WrapperInstance) {
 	}
 }
 
-func KillWrapper(id string) error {
-	instance := GlobalManager.Get(id)
-	if instance == nil {
-		return fmt.Errorf("instance %s not found", id)
-	}
+// KillWrapper 直接杀掉指定实例对象的进程。
+// 接收对象而非 id：调用方持有的是发起失败请求的那个实例引用。
+// 若按 id 解析到 GlobalManager 中"当前"的实例，重启后解析到的可能是新进程，
+// 一个延迟的失败请求就会误杀刚拉起不久的健康进程（并发时形成 kill 风暴）。
+// 已死进程的 Kill 返回无害错误，不影响后续重启流程。
+func KillWrapper(instance *WrapperInstance) error {
 	return killProcess(instance)
 }
 
