@@ -39,3 +39,6 @@ go.work.sum
 /guest/overlay/init
 /guest/out/
 /guest/overlay/
+
+# visualization tool workspace copies
+/viz/
