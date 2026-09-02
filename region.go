@@ -82,19 +82,21 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 	return val.(bool), nil
 }
 
-// SelectInstance returns the id of an instance whose region can serve the
-// given adam ID (prefers songs, falls back to music-videos).
-func SelectInstance(adamId string) (string, error) {
+// SelectInstances returns ids of all instances whose region can serve the
+// given adam ID (prefers songs, falls back to music-videos). The list is
+// shuffled so concurrent requests spread across candidates instead of all
+// hammering the first one.
+func SelectInstances(adamId string) ([]string, error) {
 	instances := SnapshotInstances()
 	if len(instances) == 0 {
-		return "", nil
+		return nil, nil
 	}
 
 	var selectedInstances []string
 	for _, instance := range instances {
 		available, err := checkAvailableOnRegion(adamId, instance.Region, false)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		if available {
 			selectedInstances = append(selectedInstances, instance.Id)
@@ -104,17 +106,31 @@ func SelectInstance(adamId string) (string, error) {
 		for _, instance := range instances {
 			available, err := checkAvailableOnRegion(adamId, instance.Region, true)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			if available {
 				selectedInstances = append(selectedInstances, instance.Id)
 			}
 		}
 	}
-	if len(selectedInstances) != 0 {
-		return selectedInstances[rand.Intn(len(selectedInstances))], nil
+	// Shuffle so parallel requests do not all select the same instance.
+	rand.Shuffle(len(selectedInstances), func(i, j int) {
+		selectedInstances[i], selectedInstances[j] = selectedInstances[j], selectedInstances[i]
+	})
+	return selectedInstances, nil
+}
+
+// SelectInstance returns a single id of an instance whose region can serve
+// the given adam ID, or "" when none is available.
+func SelectInstance(adamId string) (string, error) {
+	ids, err := SelectInstances(adamId)
+	if err != nil {
+		return "", err
 	}
-	return "", nil
+	if len(ids) == 0 {
+		return "", nil
+	}
+	return ids[0], nil
 }
 
 // SelectInstanceForLyrics returns the id of an instance that has lyrics for

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -330,12 +331,47 @@ func startLiteService(instance *WrapperInstance) error {
 	return nil
 }
 
+// unhealthyOnce guards per-instance unhealthy handling so a burst of failure
+// log lines triggers removal only once.
+var unhealthyOnce sync.Map // id -> *sync.Once
+
+// logLiteOutput streams a lite instance's stderr/stdout into the manager log
+// and watches for account-failure signals. When an account is dead (expired
+// subscription, invalid session, ...) the instance is removed and its data
+// wiped so it stops being selected for requests (mirrors v1's
+// NoSubscriptionHandler).
 func logLiteOutput(instance *WrapperInstance, r io.Reader) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
-		log.Infof("[wrapper %s] %s", shortID(instance.Id), sc.Text())
+		line := sc.Text()
+		log.Infof("[wrapper %s] %s", shortID(instance.Id), line)
+		if isAccountFailureSignal(line) {
+			once, _ := unhealthyOnce.LoadOrStore(instance.Id, &sync.Once{})
+			once.(*sync.Once).Do(func() {
+				handleUnhealthyInstance(instance, line)
+			})
+		}
 	}
+}
+
+// isAccountFailureSignal reports whether a lite log line indicates the
+// account behind this instance has lost its subscription. Mirrors v1, which
+// only acted on "No Active Subscription" (other signals such as "end lease"
+// are ordinary lifecycle events and must NOT remove an account).
+func isAccountFailureSignal(line string) bool {
+	return strings.Contains(strings.ToLower(line), "no active subscription")
+}
+
+// handleUnhealthyInstance kills the instance, removes it from the registry and
+// wipes its account data (so a later /login can re-provision it cleanly).
+func handleUnhealthyInstance(instance *WrapperInstance, reason string) {
+	log.Warnf("[wrapper %s] account unhealthy (%s); removing instance", shortID(instance.Id), reason)
+	instance.NoRestart = true
+	_ = KillWrapper(instance.Id)
+	RemoveInstance(instance)
+	_ = RemoveWrapperDataQuiet(instance.Id)
+	SaveInstances()
 }
 
 func shortID(id string) string {

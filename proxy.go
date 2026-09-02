@@ -11,14 +11,14 @@ import (
 	"strings"
 )
 
-// proxyToLite forwards an HTTP request to the given lite instance and writes
-// the lite response (status + body) through unchanged.
-func proxyToLite(w http.ResponseWriter, inst *WrapperInstance, method, path string, query url.Values, body []byte) {
+// fetchFromLite performs a request against one lite instance and returns the
+// raw response body plus the lite business code. Nothing is written to w, so
+// callers may retry on another instance before emitting a response.
+func fetchFromLite(inst *WrapperInstance, method, path string, query url.Values, body []byte) (respBody []byte, liteCode int, err error) {
 	target := fmt.Sprintf("http://127.0.0.1:%d%s", inst.Port, path)
 	req, err := http.NewRequest(method, target, bytes.NewReader(body))
 	if err != nil {
-		WriteLiteError(w, err.Error())
-		return
+		return nil, -1, err
 	}
 	if len(query) > 0 {
 		req.URL.RawQuery = query.Encode()
@@ -27,41 +27,78 @@ func proxyToLite(w http.ResponseWriter, inst *WrapperInstance, method, path stri
 
 	resp, err := GetHttpClient().Do(req)
 	if err != nil {
-		WriteLiteError(w, fmt.Sprintf("upstream error: %v", err))
-		return
+		return nil, -1, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err = io.ReadAll(resp.Body)
 	if err != nil {
-		WriteLiteError(w, fmt.Sprintf("upstream read error: %v", err))
-		return
+		return nil, -1, err
 	}
-	// Pass through the lite envelope untouched.
+	var envelope struct {
+		Code int `json:"code"`
+	}
+	_ = json.Unmarshal(respBody, &envelope)
+	return respBody, envelope.Code, nil
+}
+
+// writeLiteBody writes a raw lite response body through to the client.
+func writeLiteBody(w http.ResponseWriter, respBody []byte) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)
 }
 
+// proxyToLite forwards an HTTP request to the given lite instance and writes
+// the lite response through unchanged (used when no retry logic is needed).
+func proxyToLite(w http.ResponseWriter, inst *WrapperInstance, method, path string, query url.Values, body []byte) {
+	respBody, _, err := fetchFromLite(inst, method, path, query, body)
+	if err != nil {
+		WriteLiteError(w, fmt.Sprintf("upstream error: %v", err))
+		return
+	}
+	writeLiteBody(w, respBody)
+}
+
 // selectAndProxy picks an instance able to serve adamId and proxies the
-// request to it. body carries the raw request body for POST endpoints
-// (nil for GETs).
+// request to it. If the first instance fails at the lite business layer
+// (e.g. dead account / no asset), it retries once on another available
+// instance before returning the failure.
 func selectAndProxy(w http.ResponseWriter, r *http.Request, path string, adamID string, body []byte) {
-	instID, err := SelectInstance(adamID)
+	candidates, err := SelectInstances(adamID)
 	if err != nil {
 		WriteLiteError(w, err.Error())
 		return
 	}
-	if instID == "" {
+	if len(candidates) == 0 {
 		WriteLiteError(w, "no available instance")
 		return
 	}
-	inst := GetInstance(instID)
-	if inst == nil {
-		WriteLiteError(w, "no available instance")
+
+	query := r.URL.Query()
+	var lastBody []byte
+	for i, id := range candidates {
+		inst := GetInstance(id)
+		if inst == nil {
+			continue
+		}
+		respBody, code, ferr := fetchFromLite(inst, r.Method, path, query, body)
+		if ferr != nil {
+			log.Warnf("%s on instance %s transport error: %v", path, shortID(id), ferr)
+			continue
+		}
+		if code == 0 || i == len(candidates)-1 {
+			writeLiteBody(w, respBody)
+			return
+		}
+		// Business failure on a non-final candidate: remember and try another.
+		lastBody = respBody
+		log.Infof("%s on instance %s failed (code %d); trying another", path, shortID(id), code)
+	}
+	if lastBody != nil {
+		writeLiteBody(w, lastBody)
 		return
 	}
-	proxyToLite(w, inst, r.Method, path, r.URL.Query(), body)
+	WriteLiteError(w, "no available instance")
 }
 
 // handleLiteEndpoint is the generic resource-endpoint handler.
@@ -93,30 +130,19 @@ func handleLiteEndpoint(w http.ResponseWriter, r *http.Request) {
 			WriteLiteError(w, "missing adamId")
 			return
 		}
-		// Prefer an instance that has lyrics; fall back to region selection.
 		language := r.URL.Query().Get("language")
 		if language == "" {
 			language = "en"
 		}
-		instID := SelectInstanceForLyrics(adamId, language)
-		if instID == "" {
-			var err error
-			instID, err = SelectInstance(adamId)
-			if err != nil {
-				WriteLiteError(w, err.Error())
+		// Prefer an instance that has lyrics; otherwise fall back to the
+		// generic region-candidate selection (with per-instance retry).
+		if instID := SelectInstanceForLyrics(adamId, language); instID != "" {
+			if inst := GetInstance(instID); inst != nil {
+				proxyToLite(w, inst, r.Method, path, r.URL.Query(), nil)
 				return
 			}
 		}
-		if instID == "" {
-			WriteLiteError(w, "no available instance")
-			return
-		}
-		inst := GetInstance(instID)
-		if inst == nil {
-			WriteLiteError(w, "no available instance")
-			return
-		}
-		proxyToLite(w, inst, r.Method, path, r.URL.Query(), nil)
+		selectAndProxy(w, r, path, adamId, nil)
 	case "/license":
 		if r.Method != http.MethodPost {
 			WriteLiteError(w, "method not allowed")
