@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	log "github.com/sirupsen/logrus"
 	"os"
 	"os/exec"
 	"sync"
@@ -38,11 +39,18 @@ func SaveInstances() {
 
 	data, err := json.MarshalIndent(list, "", "  ")
 	if err != nil {
-		panic(err)
+		log.Errorf("failed to marshal instances: %v", err)
+		return
 	}
-	err = os.WriteFile("data/instances.json", data, 0777)
-	if err != nil {
-		panic(err)
+	// Atomic write: temp file + rename avoids a truncated registry on crash.
+	tmp := "data/instances.json.tmp"
+	if err = os.WriteFile(tmp, data, 0777); err != nil {
+		log.Errorf("failed to write instances.json: %v", err)
+		return
+	}
+	if err = os.Rename(tmp, "data/instances.json"); err != nil {
+		log.Errorf("failed to rename instances.json: %v", err)
+		return
 	}
 }
 
@@ -52,11 +60,16 @@ func LoadInstance() []WrapperInstance {
 	}
 	content, err := os.ReadFile("data/instances.json")
 	if err != nil {
-		panic(err)
+		log.Warnf("failed to read instances.json: %v", err)
+		return make([]WrapperInstance, 0)
 	}
 	var instances []WrapperInstance
 	if err = json.Unmarshal(content, &instances); err != nil {
-		panic(err)
+		// A corrupted/truncated registry (e.g. after a crash mid-write) must
+		// not prevent startup: back it up and start with an empty registry.
+		log.Warnf("instances.json is corrupted (%v); backing up and starting empty", err)
+		_ = os.Rename("data/instances.json", "data/instances.json.corrupt")
+		return make([]WrapperInstance, 0)
 	}
 	return instances
 }

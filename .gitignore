@@ -33,3 +33,9 @@ go.work.sum
 
 /data/
 /wrapper-manager
+# QEMU guest build outputs (produced by guest/build.sh)
+/guest/overlay/bin/busybox
+/guest/overlay/wrapper-manager
+/guest/overlay/init
+/guest/out/
+/guest/overlay/

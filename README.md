@@ -198,6 +198,66 @@ data/
   startup every entry is relaunched in service mode and `/status` is polled
   until its `regions` is non-empty (readiness).
 
+## Run on any OS via QEMU (wrapper-manager-qemu)
+
+The native manager requires Linux (it launches `wrapper-lite-rootless`, which
+needs user namespaces + chroot). To run it on **Windows / macOS / any Linux**
+without a Linux host, boot the whole manager inside a single QEMU Linux guest:
+
+```
+Windows / macOS / Linux host
+  └─ wrapper-manager-qemu (Go launcher, cross-platform)
+       └─ QEMU x86_64 guest: vmlinuz-lite-qemu + wrapper-manager-initramfs
+            └─ wrapper-manager -host 0.0.0.0 -port 8080   (Linux native)
+                 └─ wrapper-lite-rootless instances (per account)
+```
+
+The launcher is modeled after upstream
+[wrapper-lite-qemu](https://github.com/WorldObservationLog/wrapper/blob/lite/wrapper-lite-qemu.cpp):
+
+- Locates `qemu-system-x86_64` (`--qemu-bin` > `QEMU_BIN` > `PATH` > bundled).
+- Auto-selects acceleration: KVM (Linux) / WHPX (Windows) / TCG (macOS &
+  fallback) with automatic fallback to TCG when the accel is unavailable.
+- Boots the guest kernel + initramfs, attaches a persistent `data.img` and
+  forwards `hostPort` → guest manager port (8080).
+- Guest images live in `<exe-dir>/guest/` (`--assets-dir` to override); the
+  persistent data image defaults to `~/.wrapper-manager/data.img`.
+
+### Build
+
+```shell
+# 1. the launcher (any platform)
+go build -o wrapper-manager-qemu ./cmd/wrapper-manager-qemu
+
+# 2. the guest initramfs (on Linux; see guest/build.sh)
+./guest/build.sh out          # builds wrapper-manager-initramfs.cpio.gz
+CREATE_DATA_IMG=1 ./guest/build.sh out   # also create a fresh data.img
+
+# 3. the kernel is reused from the upstream wrapper qemu-assets artifact:
+#    https://nightly.link/WorldObservationLog/wrapper/workflows/build-lite/lite/qemu-assets.zip
+#    (vmlinuz-lite-qemu). Put it next to the initramfs in the assets dir.
+```
+
+Prebuilt artifacts (launchers for linux/windows/macos + guest image) are
+published by the `build-manager-qemu` workflow and are fetchable through
+nightly.link.
+
+### Run
+
+```shell
+./wrapper-manager-qemu --host-port 8080
+# guest boots; manager becomes available at http://127.0.0.1:8080
+# (same HTTP API and /login /logout as the native run)
+```
+
+Flags: `--host --host-port --guest-port --memory --smp --accel --qemu-bin
+--assets-dir --data-dir --kernel --initrd`; environment fallbacks
+`QEMU_BIN / HOST_PORT / GUEST_PORT / MEMORY / SMP`.
+
+Guest networking uses QEMU user-mode NAT (`10.0.2.15`); the guest downloads the
+wrapper-lite payload itself on first boot (nightly.link) and keeps everything
+inside `data.img`, so account state and payload survive restarts.
+
 ## Deploy (docker compose)
 
 wrapper-lite-rootless creates **user namespaces** and calls **chroot**, which

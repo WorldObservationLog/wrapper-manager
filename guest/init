@@ -1,0 +1,75 @@
+#!/bin/busybox sh
+# init for the wrapper-manager QEMU guest.
+# Boots a minimal Linux environment that runs wrapper-manager (the multi-account
+# wrapper-lite gateway) with its persistent state on /dev/vda (/data).
+
+# --- base filesystems ---
+/bin/busybox mkdir -p /proc /sys /dev /dev/pts /data /root
+/bin/busybox mount -t proc proc /proc
+/bin/busybox mount -t sysfs sysfs /sys
+/bin/busybox mount -t devtmpfs devtmpfs /dev
+/bin/busybox mount -t devpts devpts /dev/pts 2>/dev/null || true
+/bin/busybox hostname wrapper-manager
+
+# --- network (QEMU user-mode NAT) ---
+/bin/busybox insmod /e1000.ko 2>/dev/null || true
+/bin/busybox ip link set lo up
+/bin/busybox ip link set eth0 up 2>/dev/null || true
+
+# Wait for the e1000 link to come up before configuring the address.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = "1" ] && break
+    /bin/busybox sleep 1
+done
+
+/bin/busybox ip addr add 10.0.2.15/24 dev eth0 2>/dev/null || true
+/bin/busybox ip route add default via 10.0.2.2 dev eth0 2>/dev/null || true
+
+# --- DNS (QEMU user-mode built-in resolver at 10.0.2.3) ---
+/bin/busybox mkdir -p /etc
+echo "nameserver 10.0.2.3" > /etc/resolv.conf
+
+# --- data disk (/dev/vda, ext4) ---
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ -e /dev/vda ] && break
+    /bin/busybox sleep 1
+done
+if ! /bin/busybox mount -t ext4 /dev/vda /data 2>/dev/null; then
+    echo "[init] data disk mount failed - formatting as ext4"
+    /bin/busybox mke2fs -q -t ext4 /dev/vda 2>/dev/null || /bin/busybox echo "[init] mkfs.ext4 unavailable"
+    /bin/busybox mount -t ext4 /dev/vda /data 2>/dev/null && echo "[init] data disk formatted and mounted"
+fi
+
+# --- optional host-provided manager args via fw_cfg ---
+# The launcher may pass an args file through qemu fw_cfg (name=manager_args);
+# read it if present. Each line becomes one argv element.
+MANAGER_ARGS="-host 0.0.0.0 -port 8080"
+/bin/busybox insmod /qemu_fw_cfg.ko 2>/dev/null || true
+if [ -f /sys/firmware/qemu_fw_cfg/by_name/manager_args/raw ]; then
+    echo "[init] reading manager args from fw_cfg"
+    ARGS_LINE=$(/bin/busybox cat /sys/firmware/qemu_fw_cfg/by_name/manager_args/raw 2>/dev/null)
+    if [ -n "$ARGS_LINE" ]; then
+        MANAGER_ARGS="$ARGS_LINE"
+    fi
+fi
+
+# Fallback: kernel cmdline base64 (works without qemu_fw_cfg driver)
+if [ -z "$(echo "$MANAGER_ARGS" | /bin/busybox grep -c 'fw_cfg')" ]; then
+    for w in $(/bin/busybox cat /proc/cmdline); do
+        case "$w" in
+            manager_args_b64=*)
+                echo "[init] reading manager args from kernel cmdline"
+                MANAGER_ARGS=$(echo "${w#manager_args_b64=}" | /bin/busybox base64 -d 2>/dev/null)
+            ;;
+        esac
+    done
+fi
+
+echo "[init] starting wrapper-manager with: $MANAGER_ARGS"
+echo "[init] resolv.conf: $(cat /etc/resolv.conf)"
+echo "[init] eth0 carrier: $(cat /sys/class/net/eth0/carrier 2>/dev/null)"
+echo "[init] dns test: $(/bin/busybox nslookup nightly.link 10.0.2.3 2>&1 | head -3 | tr '\n' '|')"
+/bin/busybox chmod +x /wrapper-manager
+cd /data
+# shellcheck disable=SC2086
+exec /wrapper-manager $MANAGER_ARGS

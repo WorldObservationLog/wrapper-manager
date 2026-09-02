@@ -1,0 +1,97 @@
+name: build-manager-qemu
+
+on:
+  push:
+    branches: [ "v2" ]
+  pull_request:
+    branches: [ "v2" ]
+  workflow_dispatch:
+
+jobs:
+  build-guest:
+    name: Build wrapper-manager guest initramfs
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y busybox-static cpio gzip e2fsprogs
+
+      - name: Stage busybox
+        run: |
+          mkdir -p guest/overlay/bin
+          cp /bin/busybox guest/overlay/bin/busybox
+
+      - name: Build guest assets
+        run: |
+          chmod +x guest/build.sh guest/init
+          ./guest/build.sh dist-guest
+          CREATE_DATA_IMG=1 ./guest/build.sh dist-guest
+
+      - name: Fetch upstream kernel
+        run: |
+          # The kernel (vmlinuz-lite-qemu) is produced by the upstream wrapper
+          # build-lite workflow; fetch it via nightly.link so the guest image
+          # package is complete.
+          curl -sL -o qemu-assets.zip \
+            "https://nightly.link/WorldObservationLog/wrapper/workflows/build-lite/lite/qemu-assets.zip"
+          unzip -o -q qemu-assets.zip vmlinuz-lite-qemu -d dist-guest/
+
+      - name: Upload guest assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: manager-qemu-guest
+          path: dist-guest/
+          retention-days: 14
+
+  build-launcher:
+    name: Build wrapper-manager-qemu (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            goos: linux
+            goarch: amd64
+            ext: ""
+          - name: linux-aarch64
+            goos: linux
+            goarch: arm64
+            ext: ""
+          - name: windows-x86_64
+            goos: windows
+            goarch: amd64
+            ext: ".exe"
+          - name: macos-aarch64
+            goos: darwin
+            goarch: arm64
+            ext: ""
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+
+      - name: Build launcher
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          CGO_ENABLED=0 go build -o wrapper-manager-qemu${{ matrix.ext }} ./cmd/wrapper-manager-qemu
+
+      - name: Upload launcher
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrapper-manager-qemu-${{ matrix.name }}
+          path: wrapper-manager-qemu${{ matrix.ext }}
+          retention-days: 14
