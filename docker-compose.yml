@@ -1,16 +1,24 @@
 services:
   wrapper-manager:
     build: .
+    image: wrapper-manager:latest
     container_name: wrapper-manager
+    # wrapper-lite-rootless requires user namespaces (unshare) and chroot.
+    # privileged: true lifts the default seccomp/apparmor restrictions so the
+    # child process can run; if you prefer, use a custom seccomp profile that
+    # permits unshare/user namespaces instead of running privileged.
+    privileged: true
     command: [
       "--host", "0.0.0.0",
-      "--port", "8080",
-      "--mirror", "false"
+      "--port", "8080"
+      # Uncomment for users in China (downloads wrapper-lite via gh-proxy):
+      # "--mirror"
     ]
     ports:
       - "8080:8080"
     volumes:
       - data:/root/data
-      
+    restart: unless-stopped
+
 volumes:
   data:

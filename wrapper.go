@@ -1,301 +1,469 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"github.com/artdarek/go-unzip"
-	"github.com/creack/pty"
 	"github.com/gofrs/uuid/v5"
 	log "github.com/sirupsen/logrus"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
-func parseStorefrontID(id string) string {
-	sfID, err := strconv.Atoi(strings.Split(id, "-")[0])
-	if err != nil {
-		panic(err)
-	}
-	type StorefrontMapping struct {
-		Name         string `json:"name"`
-		Code         string `json:"code"`
-		StorefrontId int    `json:"storefrontId"`
-	}
-	var mapping []StorefrontMapping
-	file, err := os.ReadFile("data/storefront_ids.json")
-	if err != nil {
-		panic(err)
-	}
-	err = json.Unmarshal(file, &mapping)
-	if err != nil {
-		panic(err)
-	}
-	for _, element := range mapping {
-		if element.StorefrontId == sfID {
-			return element.Code
-		}
-	}
-	return ""
+const (
+	// InstanceNamespace is the fixed UUIDv5 namespace used to derive a stable
+	// instance id from an account username.
+	InstanceNamespace = "77777777-7777-7777-7777-77777777"
+
+	// wrapperDir is where the wrapper-lite payload (rootfs + launchers) lives.
+	wrapperDir = "data/wrapper"
+
+	// instanceBaseHost is the base-dir path inside the lite chroot.
+	instanceBaseHost = "data/wrapper/rootfs/data/instances"
+
+	// liteReadyTimeout is how long LiteStart waits for /status to report a region.
+	liteReadyTimeout = 60 * time.Second
+)
+
+// InstanceID returns the deterministic UUIDv5 for an account username.
+func InstanceID(username string) string {
+	return uuid.NewV5(uuid.FromStringOrNil(InstanceNamespace), username).String()
 }
 
+func instanceDir(id string) string {
+	return filepath.Join(instanceBaseHost, id)
+}
+
+// baseDirArg returns the --base-dir argument passed to wrapper-lite. Because
+// the rootless launcher chroots into data/wrapper/rootfs, paths are expressed
+// relative to that rootfs.
+func baseDirArg(id string) string {
+	return "/data/instances/" + id
+}
+
+// releaseAssetURL returns the nightly.link URL of the wrapper-lite native
+// artifact for the current architecture. The artifact is produced by the
+// build-lite workflow on the `lite` branch of WorldObservationLog/wrapper.
+func releaseAssetURL() (string, error) {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "https://nightly.link/WorldObservationLog/wrapper/workflows/build-lite/lite/wrapper-lite-linux-x86_64.zip", nil
+	case "arm64":
+		return "https://nightly.link/WorldObservationLog/wrapper/workflows/build-lite/lite/wrapper-lite-linux-aarch64.zip", nil
+	default:
+		return "", fmt.Errorf("unsupported arch %s", runtime.GOARCH)
+	}
+}
+
+// mirrorURL rewrites a download URL through gh-proxy.com for CN users.
+func mirrorURL(raw string) string {
+	return strings.Replace(raw, "https://nightly.link/", "https://gh-proxy.com/https://nightly.link/", 1)
+}
+
+func launcherPath() string {
+	return mustAbs(filepath.Join(wrapperDir, "wrapper-lite-rootless"))
+}
+
+// absWrapperDir returns the absolute path of the wrapper payload directory
+// (the cwd the lite launcher expects, since it chroots into ./rootfs).
+func absWrapperDir() string {
+	return mustAbs(wrapperDir)
+}
+
+func mustAbs(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		panic(err)
+	}
+	return abs
+}
+
+// wrapperPayloadReady reports whether the wrapper-lite payload is installed.
+func wrapperPayloadReady() bool {
+	_, err := os.Stat(launcherPath())
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(wrapperDir, "rootfs", "system", "bin", "lite"))
+	return err == nil
+}
+
+// PrepareWrapper downloads and extracts the wrapper-lite native package when
+// missing. mirror routes the download through gh-proxy.com.
 func PrepareWrapper(mirror bool) {
-	var wrapperZipPath string
-	if runtime.GOARCH == "amd64" {
-		wrapperZipPath = "data/wrapper-x86_64.zip"
-	} else if runtime.GOARCH == "arm64" {
-		wrapperZipPath = "data/wrapper-arm64.zip"
+	if wrapperPayloadReady() {
+		return
 	}
-	if _, err := os.Stat("data/wrapper/wrapper"); os.IsNotExist(err) {
-		if _, err := os.Stat(wrapperZipPath); os.IsNotExist(err) {
-			DownloadWrapperRelease(mirror)
-		}
-		err = unzip.New(wrapperZipPath, "data/wrapper").Extract()
-		if err != nil {
-			panic(err)
-		}
-		err = os.Chmod("data/wrapper/wrapper", 0777)
-		if err != nil {
-			panic(err)
-		}
-	}
-}
-
-func WrapperInitial(account string, password string) {
-	id := uuid.NewV5(uuid.FromStringOrNil("77777777-7777-7777-7777-77777777"), account)
-	err := os.MkdirAll("data/wrapper/rootfs/data/instances/"+id.String(), 0777)
-	if err != nil {
+	if err := os.MkdirAll(wrapperDir, 0777); err != nil {
 		panic(err)
 	}
 
-	instance := WrapperInstance{
-		Id:          id.String(),
-		DecryptPort: GenerateUniquePort(),
-		M3U8Port:    GenerateUniquePort(),
-		NoRestart:   true,
+	assetURL, err := releaseAssetURL()
+	if err != nil {
+		panic(err)
+	}
+	if mirror {
+		assetURL = mirrorURL(assetURL)
+	}
+
+	zipPath := filepath.Join("data", fmt.Sprintf("wrapper-lite-%s.zip", runtime.GOARCH))
+	log.Warnf("wrapper-lite not present, downloading %s ...", assetURL)
+
+	resp, err := GetHttpClient().Get(assetURL)
+	if err != nil {
+		panic(fmt.Errorf("failed to download wrapper-lite: %w", err))
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		panic(fmt.Errorf("failed to download wrapper-lite: HTTP %d", resp.StatusCode))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		panic(fmt.Errorf("failed to read wrapper-lite download: %w", err))
+	}
+	if err = os.WriteFile(zipPath, body, 0777); err != nil {
+		panic(err)
+	}
+
+	if err := extractZip(zipPath, wrapperDir); err != nil {
+		panic(err)
+	}
+	_ = os.Chmod(launcherPath(), 0777)
+	_ = os.Chmod(filepath.Join(wrapperDir, "rootfs", "system", "bin", "lite"), 0777)
+	_ = os.Chmod(filepath.Join(wrapperDir, "rootfs", "system", "bin", "linker64"), 0777)
+	log.Info("wrapper-lite ready")
+}
+
+// extractZip extracts srcZip into dstDir using the standard library (zip
+// entries are extracted to paths validated to stay inside dstDir).
+func extractZip(srcZip, dstDir string) error {
+	zr, err := zip.OpenReader(srcZip)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = zr.Close() }()
+
+	cleanDst, err := filepath.Abs(dstDir)
+	if err != nil {
+		return err
+	}
+	for _, f := range zr.File {
+		dest := filepath.Join(cleanDst, f.Name)
+		if !strings.HasPrefix(dest, cleanDst+string(os.PathSeparator)) && dest != cleanDst {
+			return fmt.Errorf("zip entry escapes target: %s", f.Name)
+		}
+		if f.FileInfo().IsDir() {
+			if err = os.MkdirAll(dest, 0777); err != nil {
+				return err
+			}
+			continue
+		}
+		if err = os.MkdirAll(filepath.Dir(dest), 0777); err != nil {
+			return err
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0777)
+		if err != nil {
+			_ = rc.Close()
+			return err
+		}
+		if _, err = io.Copy(out, rc); err != nil {
+			_ = out.Close()
+			_ = rc.Close()
+			return err
+		}
+		_ = out.Close()
+		_ = rc.Close()
+	}
+	return nil
+}
+
+// --- login ---------------------------------------------------------------
+
+// newLiteCmd builds an exec.Cmd for the wrapper-lite-rootless launcher.
+// The launcher forks a child that chroots and execs lite; Setpgid makes the
+// launcher a process-group leader so KillWrapper can kill the whole group
+// (launcher + forked lite) instead of leaving an orphan behind.
+func newLiteCmd(args ...string) *exec.Cmd {
+	cmd := exec.Command(launcherPath(), args...)
+	cmd.Dir = absWrapperDir()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return cmd
+}
+
+// startLiteLogin launches the one-shot --login child of wrapper-lite for an
+// account and returns immediately. The child's stderr/stdout is drained on
+// goroutines; line-based signals drive the login state machine:
+//   - "Enter your 2FA code"  -> login2FARequired(id)
+//   - child exit + token files -> success/failure resolved by runLoginChild
+func startLiteLogin(id, username, password string) (*exec.Cmd, error) {
+	dir := instanceDir(id)
+	if err := os.MkdirAll(dir, 0777); err != nil {
+		return nil, err
 	}
 
 	args := []string{
-		"-H0.0.0.0",
-		fmt.Sprintf("-L%s:%s", account, password),
-		fmt.Sprintf("-B%s", "/data/instances/"+instance.Id),
-		fmt.Sprintf("-D%d", instance.DecryptPort),
-		fmt.Sprintf("-M%d", instance.M3U8Port),
-		fmt.Sprintf("-I%s", DeviceInfo),
-		"-F",
+		"--login", fmt.Sprintf("%s:%s", username, password),
+		"--code-from-file",
+		"--base-dir", baseDirArg(id),
 	}
+	cmd := newLiteCmd(args...)
 
-	if PROXY != "" {
-		args = append(args, fmt.Sprintf("-P%s", PROXY))
-	}
-
-	cmd := exec.Command("./wrapper", args...)
-	cmd.Dir = "data/wrapper/"
-
-	ptmx, err := pty.Start(cmd)
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	defer func() { _ = ptmx.Close() }()
-
-	instance.Cmd = cmd
-	go handleOutput(ptmx, &instance)
-
-	err = cmd.Wait()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		log.Warnf("Wrapper exited with error: %v\n", err)
+		return nil, err
+	}
+	if err = cmd.Start(); err != nil {
+		return nil, err
 	}
 
-	go wrapperDown(&instance)
+	watchPipe := func(r io.Reader) {
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 64*1024), 1024*1024)
+		for sc.Scan() {
+			line := sc.Text()
+			log.Debugf("[lite login %s] %s", shortID(id), line)
+			lower := strings.ToLower(line)
+			if strings.Contains(lower, "enter your 2fa code") ||
+				(strings.Contains(lower, "2fa") && strings.Contains(lower, "code")) {
+				login2FARequired(id)
+			}
+		}
+	}
+	go watchPipe(stderr)
+	go watchPipe(stdout)
+
+	return cmd, nil
 }
 
+// --- service mode ---------------------------------------------------------
+
+// liteServiceArgs builds the wrapper-lite service-mode argument list.
+func liteServiceArgs(id string, port int) []string {
+	args := []string{
+		"--base-dir", baseDirArg(id),
+		"--host", "127.0.0.1",
+		"--port", fmt.Sprintf("%d", port),
+		"--log-level", "info",
+	}
+	if PROXY != "" {
+		args = append(args, "--proxy", PROXY)
+	}
+	return args
+}
+
+// startLiteService launches (or restarts) the long-running service process for
+// an instance and waits until its HTTP /status reports a region.
+func startLiteService(instance *WrapperInstance) error {
+	if err := os.MkdirAll(instanceDir(instance.Id), 0777); err != nil {
+		return err
+	}
+	cmd := newLiteCmd(liteServiceArgs(instance.Id, instance.Port)...)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err = cmd.Start(); err != nil {
+		return err
+	}
+
+	instance.Cmd = cmd
+	go logLiteOutput(instance, stdout)
+	go logLiteOutput(instance, stderr)
+
+	// Single waiter: resolves exactly once when the process exits.
+	exited := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(exited)
+	}()
+
+	// Poll /status until a region appears, the process exits, or timeout.
+	deadline := time.Now().Add(liteReadyTimeout)
+	for {
+		if region, err := liteStatusRegion(instance.Port); err == nil && region != "" {
+			instance.Region = region
+			break
+		}
+		select {
+		case <-exited:
+			return fmt.Errorf("lite exited before ready")
+		case <-time.After(time.Second):
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("lite did not become ready within %s", liteReadyTimeout)
+		}
+	}
+
+	// Process exited between readiness and here? Treat as down.
+	select {
+	case <-exited:
+		return fmt.Errorf("lite exited right after becoming ready")
+	default:
+	}
+
+	// Reap and cascade on exit.
+	go func() {
+		<-exited
+		wrapperDown(instance)
+	}()
+	return nil
+}
+
+func logLiteOutput(instance *WrapperInstance, r io.Reader) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	for sc.Scan() {
+		log.Infof("[wrapper %s] %s", shortID(instance.Id), sc.Text())
+	}
+}
+
+func shortID(id string) string {
+	if len(id) >= 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// liteStatusRegion queries one lite instance /status and returns its first
+// region code ("" when not logged in yet).
+func liteStatusRegion(port int) (string, error) {
+	body, err := fetchLite(port, http.MethodGet, "/status", nil, nil, "")
+	if err != nil {
+		return "", err
+	}
+	var reply LiteReply
+	if err = json.Unmarshal(body, &reply); err != nil {
+		return "", err
+	}
+	if reply.Code != 0 {
+		return "", fmt.Errorf("status code %d: %s", reply.Code, reply.Msg)
+	}
+	var data struct {
+		Regions []string `json:"regions"`
+	}
+	if len(reply.Data) > 0 {
+		if err = json.Unmarshal(reply.Data, &data); err != nil {
+			return "", err
+		}
+	}
+	if len(data.Regions) > 0 {
+		return data.Regions[0], nil
+	}
+	return "", nil
+}
+
+// WrapperStart starts a persisted instance (service mode only, no login).
 func WrapperStart(id string) {
-	instance := WrapperInstance{
-		Id:          id,
-		DecryptPort: GenerateUniquePort(),
-		M3U8Port:    GenerateUniquePort(),
-		NoRestart:   false,
+	instance := GetInstance(id)
+	if instance == nil {
+		instance = &WrapperInstance{
+			Id:        id,
+			Port:      GenerateUniquePort(),
+			NoRestart: false,
+		}
+		InsertInstance(instance)
+	} else {
+		instance.Port = GenerateUniquePort()
+		instance.NoRestart = false
 	}
 
-	args := []string{
-		"-H0.0.0.0",
-		fmt.Sprintf("-B%s", "/data/instances/"+id),
-		fmt.Sprintf("-D%d", instance.DecryptPort),
-		fmt.Sprintf("-M%d", instance.M3U8Port),
-		fmt.Sprintf("-I%s", DeviceInfo),
+	log.Infof("[wrapper %s] starting lite on port %d", shortID(id), instance.Port)
+	if err := startLiteService(instance); err != nil {
+		log.Warnf("[wrapper %s] start failed: %v", shortID(id), err)
+		if !instance.NoRestart {
+			go WrapperStart(id)
+		}
+		return
 	}
-
-	if PROXY != "" {
-		args = append(args, fmt.Sprintf("-P%s", PROXY))
-	}
-
-	cmd := exec.Command("./wrapper", args...)
-	cmd.Dir = "data/wrapper/"
-
-	ptmx, err := pty.Start(cmd)
-	if err != nil {
-		panic(err)
-	}
-	defer func() { _ = ptmx.Close() }()
-
-	instance.Cmd = cmd
-	go handleOutput(ptmx, &instance)
-
-	_ = cmd.Wait()
-
-	go wrapperDown(&instance)
-}
-
-func handleOutput(reader io.Reader, instance *WrapperInstance) {
-	scanner := bufio.NewScanner(reader)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "__") || !strings.HasPrefix(line, "WARNING") {
-			log.Debug(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), line)
-		}
-
-		if strings.Contains(line, "Waiting for input...") {
-			go Login2FAHandler(instance.Id)
-		}
-		if strings.Contains(line, "[!] listening m3u8 request on") {
-			go wrapperReady(instance)
-		}
-		if strings.Contains(line, "[!] login failed") {
-			go LoginFailedHandler(instance.Id)
-		}
-		if strings.Contains(line, "No Active Subscription") {
-			go NoSubscriptionHandler(instance)
-		}
+	log.Infof("[wrapper %s] ready, region=%s", shortID(id), instance.Region)
+	// A newly restored/restarted instance becomes ready; mark the manager
+	// ready once every persisted instance has come up.
+	if countReady() >= ShouldStartInstances {
+		setReady(true)
 	}
 }
 
-func wrapperReady(instance *WrapperInstance) {
-	storefrontID, err := os.ReadFile(fmt.Sprintf("data/wrapper/rootfs/data/instances/%s/STOREFRONT_ID", instance.Id))
-	if err != nil {
-		panic(err)
+// countReady returns how many registered instances are ready (have a region).
+func countReady() int {
+	n := 0
+	for _, inst := range SnapshotInstances() {
+		if inst.Region != "" {
+			n++
+		}
 	}
-	region := parseStorefrontID(string(storefrontID))
-	instance.Region = region
-	InsertInstance(instance)
-	WMDispatcher.AddInstance(instance)
-	instance.NoRestart = false
-	go LoginDoneHandler(instance.Id)
-	log.Info(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), " Wrapper ready")
-	if len(Instances) == ShouldStartInstances {
-		Ready = true
-	}
+	return n
 }
 
+// getInstanceOrNew returns the instance with the given id, creating and
+// registering an empty one when absent.
+func getInstanceOrNew(id string) *WrapperInstance {
+	inst := GetInstance(id)
+	if inst != nil {
+		return inst
+	}
+	inst = &WrapperInstance{
+		Id:   id,
+		Port: GenerateUniquePort(),
+	}
+	InsertInstance(inst)
+	return inst
+}
+
+// wrapperDown is triggered when the service process exits.
 func wrapperDown(instance *WrapperInstance) {
-	log.Info(fmt.Sprintf("[wrapper %s]", strings.Split(instance.Id, "-")[0]), " Wrapper Down")
+	log.Infof("[wrapper %s] wrapper down", shortID(instance.Id))
 	RemoveInstance(instance)
-	WMDispatcher.RemoveInstance(instance.Id)
 	if !instance.NoRestart {
-		go WrapperStart(instance.Id)
+		log.Infof("[wrapper %s] restarting", shortID(instance.Id))
+		WrapperStart(instance.Id)
 	} else {
 		SaveInstances()
 	}
 }
 
+// KillWrapper terminates the whole process group of an instance (the
+// wrapper-lite-rootless launcher and the lite child it forks into the chroot).
 func KillWrapper(id string) error {
 	instance := GetInstance(id)
 	if instance == nil {
 		return fmt.Errorf("instance %s not found", id)
 	}
-	if instance.Cmd == nil {
-		return fmt.Errorf("instance %s cmd is nil", id)
-	}
-	if instance.Cmd.Process == nil {
+	if instance.Cmd == nil || instance.Cmd.Process == nil {
 		return fmt.Errorf("instance %s process is nil", id)
 	}
-	return instance.Cmd.Process.Kill()
-}
-
-func provide2FACode(id string, code string) {
-	err := os.WriteFile("data/wrapper/rootfs/data/instances/"+id+"/2fa.txt", []byte(code), 0777)
-	if err != nil {
-		panic(err)
+	pid := instance.Cmd.Process.Pid
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+		// Fall back to killing just the leader when the group does not exist.
+		return instance.Cmd.Process.Kill()
 	}
+	return nil
 }
 
+// RemoveWrapperData deletes the on-disk account data directory.
 func RemoveWrapperData(id string) {
-	err := os.RemoveAll("data/wrapper/rootfs/data/instances/" + id)
+	err := os.RemoveAll(instanceDir(id))
 	if err != nil {
 		panic(err)
-	}
-}
-
-func DownloadWrapperRelease(mirror bool) {
-	var resp *http.Response
-	if runtime.GOARCH == "amd64" {
-		var err error
-		resp, err = GetHttpClient().Get("https://api.github.com/repos/WorldObservationLog/wrapper/releases/latest")
-		if err != nil {
-			panic(err)
-		}
-	} else if runtime.GOARCH == "arm64" {
-		var err error
-		resp, err = GetHttpClient().Get("https://api.github.com/repos/WorldObservationLog/wrapper/releases/tags/Wrapper.arm64.latest")
-		if err != nil {
-			panic(err)
-		}
-	} else {
-		panic("unsupported arch")
-	}
-	buf := new(strings.Builder)
-	_, err := io.Copy(buf, resp.Body)
-	var info struct {
-		Assets []map[string]interface{} `json:"assets"`
-	}
-	err = json.Unmarshal([]byte(buf.String()), &info)
-	if err != nil {
-		panic(err)
-	}
-	downloadUrl := info.Assets[0]["browser_download_url"]
-	if mirror {
-		downloadUrl = strings.Replace(downloadUrl.(string), "github.com", "gh-proxy.com/github.com", -1)
-	}
-	wrapperResp, err := GetHttpClient().Get(downloadUrl.(string))
-	if err != nil {
-		panic(err)
-	}
-	binary, err := io.ReadAll(wrapperResp.Body)
-	if runtime.GOARCH == "amd64" {
-		err = os.WriteFile("data/wrapper-x86_64.zip", binary, 0777)
-	} else if runtime.GOARCH == "arm64" {
-		err = os.WriteFile("data/wrapper-arm64.zip", binary, 0777)
-	} else {
-		panic("unsupported arch")
-	}
-
-	if err != nil {
-		panic(err)
-	}
-}
-
-func DownloadStorefrontIds() {
-	resp, err := GetHttpClient().Get("https://gist.githubusercontent.com/BrychanOdlum/2208578ba151d1d7c4edeeda15b4e9b1/raw/8f01e4a4cb02cf97a48aba4665286b0e8de14b8e/storefrontmappings.json")
-	if err != nil {
-		panic(err)
-	}
-	ids, err := io.ReadAll(resp.Body)
-	err = os.WriteFile("data/storefront_ids.json", ids, 0777)
-	if err != nil {
-		panic(err)
-	}
-}
-
-func NoSubscriptionHandler(instance *WrapperInstance) {
-	if instance.NoRestart {
-		go LoginFailedHandler(instance.Id)
-	} else {
-		RemoveInstance(instance)
-		RemoveWrapperData(instance.Id)
-		SaveInstances()
 	}
 }

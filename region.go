@@ -15,6 +15,9 @@ var (
 	songRegionSingleFlight singleflight.Group
 )
 
+// checkAvailableOnRegion probes Apple's catalog to test whether an adam ID is
+// available in the given storefront region. mv switches between songs and
+// music-videos. Results are memoized.
 func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error) {
 	var cacheKey string
 	if mv {
@@ -53,6 +56,7 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 		if err != nil {
 			return false, err
 		}
+		defer func() { _ = resp.Body.Close() }()
 
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -72,12 +76,22 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 		return available, nil
 	})
 
-	return val.(bool), err
+	if err != nil {
+		return false, err
+	}
+	return val.(bool), nil
 }
 
+// SelectInstance returns the id of an instance whose region can serve the
+// given adam ID (prefers songs, falls back to music-videos).
 func SelectInstance(adamId string) (string, error) {
+	instances := SnapshotInstances()
+	if len(instances) == 0 {
+		return "", nil
+	}
+
 	var selectedInstances []string
-	for _, instance := range Instances {
+	for _, instance := range instances {
 		available, err := checkAvailableOnRegion(adamId, instance.Region, false)
 		if err != nil {
 			return "", err
@@ -87,7 +101,7 @@ func SelectInstance(adamId string) (string, error) {
 		}
 	}
 	if len(selectedInstances) == 0 {
-		for _, instance := range Instances {
+		for _, instance := range instances {
 			available, err := checkAvailableOnRegion(adamId, instance.Region, true)
 			if err != nil {
 				return "", err
@@ -103,13 +117,15 @@ func SelectInstance(adamId string) (string, error) {
 	return "", nil
 }
 
+// SelectInstanceForLyrics returns the id of an instance that has lyrics for
+// the given adam ID and language (best effort; probe failure returns "").
 func SelectInstanceForLyrics(adamId string, language string) string {
 	token, err := GetToken()
 	if err != nil {
 		return ""
 	}
 	var selectedInstances []string
-	for _, instance := range Instances {
+	for _, instance := range SnapshotInstances() {
 		musicToken, err := GetMusicToken(instance)
 		if err != nil {
 			return ""
