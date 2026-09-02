@@ -82,6 +82,9 @@ func InsertInstance(instance *WrapperInstance) {
 			return
 		}
 	}
+	// A fresh lifecycle for this instance id: reset the unhealthy-once guard
+	// so a re-logged-in instance can be deactivated/removed again if needed.
+	unhealthyOnce.Delete(instance.Id)
 	Instances = append(Instances, instance)
 }
 

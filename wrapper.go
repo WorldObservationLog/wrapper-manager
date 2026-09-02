@@ -336,41 +336,79 @@ func startLiteService(instance *WrapperInstance) error {
 var unhealthyOnce sync.Map // id -> *sync.Once
 
 // logLiteOutput streams a lite instance's stderr/stdout into the manager log
-// and watches for account-failure signals. When an account is dead (expired
-// subscription, invalid session, ...) the instance is removed and its data
-// wiped so it stops being selected for requests (mirrors v1's
-// NoSubscriptionHandler).
+// and watches for account-failure signals. Two tiers of failure:
+//
+//   - Subscription dead ("No Active Subscription"): the account can no longer
+//     serve anything - remove the instance AND wipe its data (v1 parity).
+//   - Session invalid ("Check the account information you entered and try
+//     again", re-login dialog): deactivate the instance (stop selecting it,
+//     keep it out of instances.json) but KEEP the data directory so a later
+//     POST /login can re-provision it.
 func logLiteOutput(instance *WrapperInstance, r io.Reader) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
 		line := sc.Text()
 		log.Infof("[wrapper %s] %s", shortID(instance.Id), line)
-		if isAccountFailureSignal(line) {
+		switch {
+		case isSubscriptionDeadSignal(line):
 			once, _ := unhealthyOnce.LoadOrStore(instance.Id, &sync.Once{})
 			once.(*sync.Once).Do(func() {
-				handleUnhealthyInstance(instance, line)
+				handleSubscriptionDead(instance, line)
+			})
+		case isSessionInvalidSignal(line):
+			once, _ := unhealthyOnce.LoadOrStore(instance.Id, &sync.Once{})
+			once.(*sync.Once).Do(func() {
+				handleSessionInvalid(instance, line)
 			})
 		}
 	}
 }
 
-// isAccountFailureSignal reports whether a lite log line indicates the
-// account behind this instance has lost its subscription. Mirrors v1, which
-// only acted on "No Active Subscription" (other signals such as "end lease"
-// are ordinary lifecycle events and must NOT remove an account).
-func isAccountFailureSignal(line string) bool {
+// isSubscriptionDeadSignal reports a log line meaning the account's Apple
+// Music subscription is gone. Mirrors v1, which only acted on
+// "No Active Subscription".
+func isSubscriptionDeadSignal(line string) bool {
 	return strings.Contains(strings.ToLower(line), "no active subscription")
 }
 
-// handleUnhealthyInstance kills the instance, removes it from the registry and
+// isSessionInvalidSignal reports a log line meaning the account session/token
+// is no longer accepted by Apple and a fresh login is required. Deliberately
+// does not include "end lease" (ordinary lifecycle) or subscription messages.
+func isSessionInvalidSignal(line string) bool {
+	l := strings.ToLower(line)
+	signals := []string{
+		"check the account information you entered and try again",
+		"your session has ended",
+		"sign in to continue",
+	}
+	for _, s := range signals {
+		if strings.Contains(l, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// handleSubscriptionDead kills the instance, removes it from the registry and
 // wipes its account data (so a later /login can re-provision it cleanly).
-func handleUnhealthyInstance(instance *WrapperInstance, reason string) {
-	log.Warnf("[wrapper %s] account unhealthy (%s); removing instance", shortID(instance.Id), reason)
+func handleSubscriptionDead(instance *WrapperInstance, reason string) {
+	log.Warnf("[wrapper %s] subscription dead (%s); removing instance and data", shortID(instance.Id), reason)
 	instance.NoRestart = true
 	_ = KillWrapper(instance.Id)
 	RemoveInstance(instance)
 	_ = RemoveWrapperDataQuiet(instance.Id)
+	SaveInstances()
+}
+
+// handleSessionInvalid deactivates the instance: it is killed and removed from
+// the registry / instances.json so it stops being selected, but its data
+// directory is kept so the account can be re-logged-in later via POST /login.
+func handleSessionInvalid(instance *WrapperInstance, reason string) {
+	log.Warnf("[wrapper %s] session invalid (%s); deactivating instance (data kept)", shortID(instance.Id), reason)
+	instance.NoRestart = true
+	_ = KillWrapper(instance.Id)
+	RemoveInstance(instance)
 	SaveInstances()
 }
 
