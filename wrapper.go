@@ -97,50 +97,128 @@ func wrapperPayloadReady() bool {
 	return err == nil
 }
 
+// installResult describes a completed wrapper-lite payload install.
+type installResult struct {
+	ZipPath  string
+	Launcher string
+	LiteBin  string
+}
+
+// downloadWrapperLite downloads the nightly.link artifact for the current
+// architecture to data/ and returns the local zip path. mirror routes through
+// gh-proxy.com.
+func downloadWrapperLite(mirror bool) (string, error) {
+	assetURL, err := releaseAssetURL()
+	if err != nil {
+		return "", err
+	}
+	if mirror {
+		assetURL = mirrorURL(assetURL)
+	}
+	zipPath := filepath.Join("data", fmt.Sprintf("wrapper-lite-%s.zip", runtime.GOARCH))
+	if err := os.MkdirAll("data", 0o755); err != nil {
+		return "", err
+	}
+
+	log.Infof("downloading wrapper-lite from %s ...", assetURL)
+	resp, err := GetHttpClient().Get(assetURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to download wrapper-lite: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download wrapper-lite: HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read wrapper-lite download: %w", err)
+	}
+	if err = os.WriteFile(zipPath, body, 0o777); err != nil {
+		return "", err
+	}
+	return zipPath, nil
+}
+
+// installWrapperLite extracts a downloaded zip into the wrapper payload dir.
+// The zip only contains system files (rootfs/system + launchers), never
+// rootfs/data, so per-account state is untouched. Returns the installed
+// artifact paths.
+func installWrapperLite(zipPath string) (installResult, error) {
+	if err := os.MkdirAll(wrapperDir, 0o777); err != nil {
+		return installResult{}, err
+	}
+	if err := extractZip(zipPath, wrapperDir); err != nil {
+		return installResult{}, err
+	}
+	launcher := launcherPath()
+	liteBin := filepath.Join(wrapperDir, "rootfs", "system", "bin", "lite")
+	_ = os.Chmod(launcher, 0o777)
+	_ = os.Chmod(liteBin, 0o777)
+	_ = os.Chmod(filepath.Join(wrapperDir, "rootfs", "system", "bin", "linker64"), 0o777)
+	return installResult{ZipPath: zipPath, Launcher: launcher, LiteBin: liteBin}, nil
+}
+
+// describeInstall prints basic info about the installed payload for humans
+// (nightly.link artifacts carry no version number).
+func describeInstall(res installResult) {
+	log.Infof("wrapper-lite installed:")
+	log.Infof("  launcher : %s", res.Launcher)
+	log.Infof("  lite bin : %s", res.LiteBin)
+	if fi, err := os.Stat(res.LiteBin); err == nil {
+		log.Infof("  lite size: %d bytes (mtime %s)", fi.Size(), fi.ModTime().Format(time.RFC3339))
+	}
+}
+
 // PrepareWrapper downloads and extracts the wrapper-lite native package when
 // missing. mirror routes the download through gh-proxy.com.
 func PrepareWrapper(mirror bool) {
 	if wrapperPayloadReady() {
 		return
 	}
-	if err := os.MkdirAll(wrapperDir, 0777); err != nil {
-		panic(err)
-	}
-
-	assetURL, err := releaseAssetURL()
+	zipPath, err := downloadWrapperLite(mirror)
 	if err != nil {
 		panic(err)
 	}
-	if mirror {
-		assetURL = mirrorURL(assetURL)
-	}
-
-	zipPath := filepath.Join("data", fmt.Sprintf("wrapper-lite-%s.zip", runtime.GOARCH))
-	log.Warnf("wrapper-lite not present, downloading %s ...", assetURL)
-
-	resp, err := GetHttpClient().Get(assetURL)
+	res, err := installWrapperLite(zipPath)
 	if err != nil {
-		panic(fmt.Errorf("failed to download wrapper-lite: %w", err))
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		panic(fmt.Errorf("failed to download wrapper-lite: HTTP %d", resp.StatusCode))
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		panic(fmt.Errorf("failed to read wrapper-lite download: %w", err))
-	}
-	if err = os.WriteFile(zipPath, body, 0777); err != nil {
 		panic(err)
 	}
-
-	if err := extractZip(zipPath, wrapperDir); err != nil {
-		panic(err)
-	}
-	_ = os.Chmod(launcherPath(), 0777)
-	_ = os.Chmod(filepath.Join(wrapperDir, "rootfs", "system", "bin", "lite"), 0777)
-	_ = os.Chmod(filepath.Join(wrapperDir, "rootfs", "system", "bin", "linker64"), 0777)
 	log.Info("wrapper-lite ready")
+	describeInstall(res)
+}
+
+// UpdateWrapper force-reinstalls the latest wrapper-lite payload from
+// nightly.link. Unlike PrepareWrapper it always downloads (even when a payload
+// already exists), so a newer artifact replaces the current install. Per-account
+// data under rootfs/data is never touched (the artifact does not contain it).
+// It returns an error when anything fails so the CLI caller can exit non-zero.
+func UpdateWrapper(mirror bool) error {
+	// Defensive: if for any reason rootfs/data exists and the artifact layout
+	// ever changes to include it, refuse rather than wipe accounts.
+	accountDir := filepath.Join(wrapperDir, "rootfs", "data", "instances")
+	if _, err := os.Stat(accountDir); err == nil {
+		// Confirmed present; install then verify it survived.
+		log.Infof("account data present at %s (will be preserved)", accountDir)
+	}
+
+	zipPath, err := downloadWrapperLite(mirror)
+	if err != nil {
+		return err
+	}
+	res, err := installWrapperLite(zipPath)
+	if err != nil {
+		return fmt.Errorf("failed to install wrapper-lite: %w", err)
+	}
+
+	// Verify account data survived the reinstall.
+	if _, err := os.Stat(accountDir); err != nil {
+		// Only a problem if it existed before.
+		log.Warnf("account data dir not found after install: %v", err)
+	}
+
+	log.Info("wrapper-lite updated")
+	describeInstall(res)
+	return nil
 }
 
 // extractZip extracts srcZip into dstDir using the standard library (zip

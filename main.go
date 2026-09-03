@@ -36,6 +36,7 @@ func main() {
 	var mirror = flag.Bool("mirror", false, "use mirror to download wrapper-lite (for Chinese users)")
 	var debug = flag.Bool("debug", false, "enable debug output")
 	var prepare = flag.Bool("prepare", false, "only download required files")
+	var updateWrapper = flag.Bool("update-wrapper", false, "force re-download and reinstall the latest wrapper-lite payload, then exit")
 	flag.StringVar(&PROXY, "proxy", "", "proxy for wrapper and manager")
 	flag.StringVar(&DeviceInfo, "device-info", "Music/5.0.2/Android/10/Pixel 8/7663314/en-US/en-US", "device info for wrapper-lite (--device-info pass-through, optional)")
 	flag.Parse()
@@ -45,6 +46,18 @@ func main() {
 		log.SetLevel(log.DebugLevel)
 	} else {
 		log.SetLevel(log.InfoLevel)
+	}
+
+	// Standalone one-shot: force-update the wrapper-lite payload and exit.
+	// Handled before the automatic first-run download so an existing payload
+	// is always replaced by the latest nightly artifact.
+	if *updateWrapper {
+		if err := UpdateWrapper(*mirror); err != nil {
+			log.Errorf("update-wrapper failed: %v", err)
+			os.Exit(1)
+		}
+		log.Info("update-wrapper done")
+		os.Exit(0)
 	}
 
 	// wrapper-lite payload must be present before anything else.
