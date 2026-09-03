@@ -133,25 +133,74 @@ func SelectInstance(adamId string) (string, error) {
 	return ids[0], nil
 }
 
-// SelectInstanceForLyrics returns the id of an instance that has lyrics for
-// the given adam ID and language (best effort; probe failure returns "").
+// SelectInstanceForLyrics returns the id of an instance best suited to serve
+// lyrics for the given adam ID and language. Two preference tiers:
+//
+//  1. Instances whose storefront declares support for the requested language
+//     (region -> supportedLanguageTags from the Apple storefronts API) AND
+//     whose catalog has the song (region probe).
+//  2. Any instance whose catalog has the song (region probe), regardless of
+//     language (previous behaviour).
+//
+// Returns "" when nothing can serve the song.
 func SelectInstanceForLyrics(adamId string, language string) string {
+	instances := SnapshotInstances()
+	if len(instances) == 0 {
+		return ""
+	}
+
+	// Tier 1: prefer instances whose storefront supports the lyric language.
+	langs := ensureStorefrontLangs()
+	var tier1, tier2 []string
+	for _, instance := range instances {
+		if langs != nil && langs.regionSupportsLang(instance.Region, language) {
+			tier1 = append(tier1, instance.Id)
+		} else {
+			tier2 = append(tier2, instance.Id)
+		}
+	}
+
+	// Among the language-matching candidates, keep only those whose region
+	// catalog actually has the song.
+	if len(tier1) > 0 {
+		if id := pickLyricsInstanceWithSong(adamId, language, tier1); id != "" {
+			return id
+		}
+	}
+	// Tier 2: fall back to any instance whose catalog has the song.
+	if id := pickLyricsInstanceWithSong(adamId, language, tier2); id != "" {
+		return id
+	}
+	return ""
+}
+
+// pickLyricsInstanceWithSong filters candidate instance ids to those whose
+// region catalog has the song with the requested lyric language, and returns
+// a random one. Returns "" if none match (or probing fails).
+func pickLyricsInstanceWithSong(adamId, language string, candidates []string) string {
+	if len(candidates) == 0 {
+		return ""
+	}
 	token, err := GetToken()
 	if err != nil {
 		return ""
 	}
-	var selectedInstances []string
-	for _, instance := range SnapshotInstances() {
-		musicToken, err := GetMusicToken(instance)
-		if err != nil {
-			return ""
+	var hit []string
+	for _, id := range candidates {
+		inst := GetInstance(id)
+		if inst == nil {
+			continue
 		}
-		if HasLyrics(adamId, instance.Region, language, token, musicToken) {
-			selectedInstances = append(selectedInstances, instance.Id)
+		musicToken, err := GetMusicToken(inst)
+		if err != nil {
+			continue
+		}
+		if HasLyrics(adamId, inst.Region, language, token, musicToken) {
+			hit = append(hit, id)
 		}
 	}
-	if len(selectedInstances) != 0 {
-		return selectedInstances[rand.Intn(len(selectedInstances))]
+	if len(hit) != 0 {
+		return hit[rand.Intn(len(hit))]
 	}
 	return ""
 }
