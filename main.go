@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
-	log "github.com/sirupsen/logrus"
-	"net/http"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
+
+	log "github.com/sirupsen/logrus"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"net/http"
 )
 
 var (
@@ -106,16 +111,49 @@ func main() {
 	mux.HandleFunc("/login", handleLogin)
 	mux.HandleFunc("/logout", handleLogout)
 
+	// OpenTelemetry: build providers (OTLP env vars), bridge logrus logs and
+	// wrap the HTTP handler for automatic per-request traces.
+	tel := initTelemetry()
+	if tel != nil {
+		attachLogrusHook()
+	}
+	var handler http.Handler = mux
+	if tel != nil {
+		handler = otelhttp.NewHandler(handler, "http",
+			otelhttp.WithSpanNameFormatter(func(op string, r *http.Request) string {
+				return r.Method + " " + r.URL.Path
+			}))
+	}
+
 	server := &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", *host, *port),
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 	}
 
 	log.Infof("wrapperManager running at %s:%d", *host, *port)
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("server error: %v", err)
+
+	// Run the server and shut down gracefully on SIGINT/SIGTERM so OTel
+	// batches are flushed before exit.
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	<-sigCh
+	log.Info("shutting down...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = server.Shutdown(ctx)
+	if tel != nil {
+		if err := tel.Shutdown(ctx); err != nil {
+			log.Warnf("otel shutdown: %v", err)
+		}
 	}
 }
 
