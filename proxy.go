@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	log "github.com/sirupsen/logrus"
@@ -9,12 +10,23 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // fetchFromLite performs a request against one lite instance and returns the
 // raw response body plus the lite business code. Nothing is written to w, so
 // callers may retry on another instance before emitting a response.
+//
+// Concurrency per instance is capped (instanceConcurrency); when all slots are
+// busy for slotTimeout the call fails fast with a busy error instead of
+// queueing unboundedly behind a saturated instance.
 func fetchFromLite(inst *WrapperInstance, method, path string, query url.Values, body []byte) (respBody []byte, liteCode int, err error) {
+	const slotTimeout = 15 * time.Second
+	if !inst.acquireInstanceSlot(slotTimeout) {
+		return nil, -1, fmt.Errorf("instance %s busy", shortID(inst.Id))
+	}
+	defer inst.releaseInstanceSlot()
+
 	target := fmt.Sprintf("http://127.0.0.1:%d%s", inst.Port, path)
 	req, err := http.NewRequest(method, target, bytes.NewReader(body))
 	if err != nil {
@@ -24,6 +36,14 @@ func fetchFromLite(inst *WrapperInstance, method, path string, query url.Values,
 		req.URL.RawQuery = query.Encode()
 	}
 	req.Header.Set("Content-Type", "application/json")
+
+	// Bound a single forwarded request so a hung lite call cannot hold the
+	// per-instance slot (and thus the whole manager) indefinitely. If the
+	// caller passed a deadline (http server), respect the shorter one.
+	const upstreamTimeout = 30 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), upstreamTimeout)
+	defer cancel()
+	req = req.WithContext(ctx)
 
 	resp, err := GetHttpClient().Do(req)
 	if err != nil {

@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"sync"
+	"time"
 )
 
 // decodeJSON decodes a JSON request body into v.
@@ -15,17 +18,44 @@ func decodeJSON(r *http.Request, v any) error {
 	return dec.Decode(v)
 }
 
-// GetHttpClient returns an http.Client honoring the global PROXY setting.
+// httpClientSingleton is a process-wide http.Client with a reused transport
+// (connection pooling). Creating a client/transport per call defeats keep-alive
+// and kills throughput, which matters at this request rate.
+var (
+	httpClientOnce   sync.Once
+	httpClientShared *http.Client
+)
+
+// GetHttpClient returns the shared http.Client honoring the global PROXY
+// setting. The transport is built once and reused: connections to the local
+// wrapper-lite instances and to Apple are kept alive and pooled.
 func GetHttpClient() *http.Client {
-	if PROXY == "" {
-		return http.DefaultClient
-	}
-	proxyUrl, err := url.Parse(PROXY)
-	if err != nil {
-		panic("Invalid proxy URL: " + PROXY)
-	}
-	transport := &http.Transport{Proxy: http.ProxyURL(proxyUrl)}
-	return &http.Client{Transport: transport}
+	httpClientOnce.Do(func() {
+		tr := &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			MaxIdleConns:          200,
+			MaxIdleConnsPerHost:   32,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			DialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+		}
+		if PROXY != "" {
+			proxyUrl, err := url.Parse(PROXY)
+			if err == nil {
+				tr.Proxy = http.ProxyURL(proxyUrl)
+			}
+		}
+		httpClientShared = &http.Client{
+			Transport: tr,
+			Timeout:   60 * time.Second,
+		}
+	})
+	return httpClientShared
 }
 
 // LiteReply is the wire envelope used by wrapper-lite and by wrapper-manager:

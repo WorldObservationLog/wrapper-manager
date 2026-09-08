@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 )
 
 // Instances is the global registry of running (or starting) account instances.
@@ -14,12 +15,50 @@ var Instances []*WrapperInstance
 // instancesMu guards Instances.
 var instancesMu sync.RWMutex
 
+// instanceConcurrency is the maximum number of in-flight requests forwarded
+// to a single wrapper-lite instance. lite serialises its Apple playback/lease
+// work internally; more than a couple of concurrent requests just pile up and
+// can trip Apple-side throttling, so we cap per-instance concurrency and let
+// the other instances absorb load.
+const instanceConcurrency = 2
+
 type WrapperInstance struct {
 	Id        string    `json:"id"`
 	Region    string    `json:"region"`
 	Port      int       `json:"port"`
 	NoRestart bool      `json:"-"`
 	Cmd       *exec.Cmd `json:"-"`
+
+	// sem bounds concurrent requests forwarded to this instance. Lazily
+	// initialised by acquireInstanceSlot.
+	sem chan struct{} `json:"-"`
+}
+
+// ensureSem creates the per-instance semaphore on first use.
+func (i *WrapperInstance) ensureSem() {
+	if i.sem == nil {
+		i.sem = make(chan struct{}, instanceConcurrency)
+	}
+}
+
+// acquireInstanceSlot reserves a concurrency slot on the instance. It blocks
+// until a slot is free or the deadline passes; on timeout it returns false so
+// the caller can report a busy/overloaded response instead of piling up.
+func (i *WrapperInstance) acquireInstanceSlot(timeout time.Duration) bool {
+	i.ensureSem()
+	select {
+	case i.sem <- struct{}{}:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// releaseInstanceSlot frees a previously acquired slot.
+func (i *WrapperInstance) releaseInstanceSlot() {
+	if i.sem != nil {
+		<-i.sem
+	}
 }
 
 func SaveInstances() {

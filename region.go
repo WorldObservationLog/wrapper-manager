@@ -3,15 +3,20 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"golang.org/x/sync/singleflight"
 	"io"
 	"math/rand"
 	"net/http"
 	"sync"
+	"time"
 )
 
 var (
-	SongRegionCache        sync.Map
+	// SongRegionCache memoizes region availability for (song|mv, region, adamId).
+	// LRU-bounded (256k entries) with a 24h TTL so memory does not grow without
+	// bound under a large, diverse adamId workload.
+	SongRegionCache        = expirable.NewLRU[string, bool](256_000, nil, 24*time.Hour)
 	songRegionSingleFlight singleflight.Group
 )
 
@@ -25,8 +30,8 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 	} else {
 		cacheKey = fmt.Sprintf("song/%s/%s", region, adamId)
 	}
-	if result, ok := SongRegionCache.Load(cacheKey); ok {
-		return result.(bool), nil
+	if result, ok := SongRegionCache.Get(cacheKey); ok {
+		return result, nil
 	}
 
 	val, err, _ := songRegionSingleFlight.Do(cacheKey, func() (interface{}, error) {
@@ -72,7 +77,7 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 		}
 
 		available := respJson["data"] != nil
-		SongRegionCache.Store(cacheKey, available)
+		SongRegionCache.Add(cacheKey, available)
 		return available, nil
 	})
 
@@ -83,33 +88,59 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 }
 
 // SelectInstances returns ids of all instances whose region can serve the
-// given adam ID (prefers songs, falls back to music-videos). The list is
-// shuffled so concurrent requests spread across candidates instead of all
-// hammering the first one.
+// given adam ID (prefers songs, falls back to music-videos). Region probes are
+// run concurrently (bounded) so first-request latency does not scale linearly
+// with instance count. The list is shuffled so concurrent requests spread
+// across candidates instead of all hammering the first one.
 func SelectInstances(adamId string) ([]string, error) {
 	instances := SnapshotInstances()
 	if len(instances) == 0 {
 		return nil, nil
 	}
 
+	// Probe all instances' regions for the song in parallel, bounded.
+	const probeWorkers = 8
+	sem := make(chan struct{}, probeWorkers)
+	type res struct {
+		id string
+		ok bool
+	}
+	results := make([]res, len(instances))
+	var wg sync.WaitGroup
+	for i, inst := range instances {
+		wg.Add(1)
+		go func(i int, inst *WrapperInstance) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			ok, err := checkAvailableOnRegion(adamId, inst.Region, false)
+			if err != nil {
+				// On probe error treat the region as unavailable rather than
+				// failing the whole request (matches old per-region semantics
+				// where a single error aborted selection).
+				results[i] = res{id: inst.Id, ok: false}
+				return
+			}
+			results[i] = res{id: inst.Id, ok: ok}
+		}(i, inst)
+	}
+	wg.Wait()
+
 	var selectedInstances []string
-	for _, instance := range instances {
-		available, err := checkAvailableOnRegion(adamId, instance.Region, false)
-		if err != nil {
-			return nil, err
-		}
-		if available {
-			selectedInstances = append(selectedInstances, instance.Id)
+	for _, r := range results {
+		if r.ok {
+			selectedInstances = append(selectedInstances, r.id)
 		}
 	}
+	// Fall back to music-videos only when no song hit was found.
 	if len(selectedInstances) == 0 {
-		for _, instance := range instances {
-			available, err := checkAvailableOnRegion(adamId, instance.Region, true)
+		for _, inst := range instances {
+			ok, err := checkAvailableOnRegion(adamId, inst.Region, true)
 			if err != nil {
 				return nil, err
 			}
-			if available {
-				selectedInstances = append(selectedInstances, instance.Id)
+			if ok {
+				selectedInstances = append(selectedInstances, inst.Id)
 			}
 		}
 	}
