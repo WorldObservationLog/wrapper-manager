@@ -62,8 +62,22 @@ func fetchFromLite(inst *WrapperInstance, method, path string, query url.Values,
 	return respBody, envelope.Code, nil
 }
 
-// writeLiteBody writes a raw lite response body through to the client.
-func writeLiteBody(w http.ResponseWriter, respBody []byte) {
+// cacheablePaths are the wrapper-lite resource endpoints Cloudflare is
+// allowed to cache on success. /license, /login, /logout and /status are
+// deliberately excluded.
+func isCacheablePath(path string) bool {
+	switch path {
+	case "/m3u8", "/webplayback", "/key", "/lyrics":
+		return true
+	}
+	return false
+}
+
+// writeLiteBody writes a raw lite response body through to the client with an
+// appropriate Cache-Control header (public on cacheable success, no-store on
+// any failure / non-cacheable endpoint).
+func writeLiteBody(w http.ResponseWriter, path string, respBody []byte, liteCode int) {
+	setCacheHeader(w, isCacheablePath(path), liteCode)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(respBody)
 }
@@ -71,12 +85,12 @@ func writeLiteBody(w http.ResponseWriter, respBody []byte) {
 // proxyToLite forwards an HTTP request to the given lite instance and writes
 // the lite response through unchanged (used when no retry logic is needed).
 func proxyToLite(w http.ResponseWriter, inst *WrapperInstance, method, path string, query url.Values, body []byte) {
-	respBody, _, err := fetchFromLite(inst, method, path, query, body)
+	respBody, code, err := fetchFromLite(inst, method, path, query, body)
 	if err != nil {
 		WriteLiteError(w, fmt.Sprintf("upstream error: %v", err))
 		return
 	}
-	writeLiteBody(w, respBody)
+	writeLiteBody(w, path, respBody, code)
 }
 
 // selectAndProxy picks an instance able to serve adamId and proxies the
@@ -96,6 +110,7 @@ func selectAndProxy(w http.ResponseWriter, r *http.Request, path string, adamID 
 
 	query := r.URL.Query()
 	var lastBody []byte
+	var lastCode int
 	for i, id := range candidates {
 		inst := GetInstance(id)
 		if inst == nil {
@@ -107,15 +122,16 @@ func selectAndProxy(w http.ResponseWriter, r *http.Request, path string, adamID 
 			continue
 		}
 		if code == 0 || i == len(candidates)-1 {
-			writeLiteBody(w, respBody)
+			writeLiteBody(w, path, respBody, code)
 			return
 		}
 		// Business failure on a non-final candidate: remember and try another.
 		lastBody = respBody
+		lastCode = code
 		log.Infof("%s on instance %s failed (code %d); trying another", path, shortID(id), code)
 	}
 	if lastBody != nil {
-		writeLiteBody(w, lastBody)
+		writeLiteBody(w, path, lastBody, lastCode)
 		return
 	}
 	WriteLiteError(w, "no available instance")

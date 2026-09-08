@@ -66,8 +66,59 @@ type LiteReply struct {
 	Data json.RawMessage `json:"data"`
 }
 
-// WriteEnvelope writes a unified envelope to the HTTP response.
+// Cache-Control headers used to steer Cloudflare's cache for the proxied
+// wrapper-lite API. Success (code 0) on cacheable endpoints may be cached;
+// anything else must NOT be cached (a cached failure would poison the edge
+// cache until the TTL expires).
+const (
+	headerCacheControl = "Cache-Control"
+
+	// cacheableTTLSeconds is a reference max-age on cacheable successes. When
+	// Cloudflare is configured with "ignore origin Cache-Control and use this
+	// TTL", the edge TTL wins; otherwise this value is used.
+	cacheableTTLSeconds = 3600
+
+	cacheControlPublic  = "public, max-age=3600"
+	cacheControlNoStore = "no-store"
+)
+
+// setCacheHeader sets Cache-Control based on whether the endpoint is cacheable
+// (part of the media/catalog API surface) and whether the business code is a
+// success (0).
+func setCacheHeader(w http.ResponseWriter, cacheableEndpoint bool, code int) {
+	if !cacheableEndpoint {
+		w.Header().Set(headerCacheControl, cacheControlNoStore)
+		return
+	}
+	if code == 0 {
+		w.Header().Set(headerCacheControl, cacheControlPublic)
+	} else {
+		w.Header().Set(headerCacheControl, cacheControlNoStore)
+	}
+}
+
+// WriteEnvelope writes a unified envelope to the HTTP response. cacheable
+// marks endpoints that Cloudflare is allowed to cache on success.
 func WriteEnvelope(w http.ResponseWriter, code int, msg string, data any) {
+	setCacheHeader(w, false, code)
+	w.Header().Set("Content-Type", "application/json")
+	payload := map[string]any{
+		"code": code,
+		"msg":  msg,
+		"data": data,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		body = []byte(`{"code":-1,"msg":"internal error","data":null}`)
+	}
+	_, _ = w.Write(body)
+}
+
+// WriteEnvelopeCacheable is like WriteEnvelope but marks the endpoint as
+// cacheable, so successful (code 0) responses get a public Cache-Control and
+// failures are still no-store.
+func WriteEnvelopeCacheable(w http.ResponseWriter, code int, msg string, data any) {
+	setCacheHeader(w, true, code)
 	w.Header().Set("Content-Type", "application/json")
 	payload := map[string]any{
 		"code": code,
