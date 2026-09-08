@@ -208,6 +208,11 @@ func SelectInstanceForLyrics(adamId string, language string) string {
 // pickLyricsInstanceWithSong filters candidate instance ids to those whose
 // region catalog has the song with the requested lyric language, and returns
 // a random one. Returns "" if none match (or probing fails).
+//
+// Candidate probes run concurrently (bounded) and results are cached per
+// (song, region, language) for 24h, so repeated lyric requests do not re-probe
+// every instance. This is what keeps /lyrics latency low: probing 19+ region
+// catalogs serially on every request was the dominant cost.
 func pickLyricsInstanceWithSong(adamId, language string, candidates []string) string {
 	if len(candidates) == 0 {
 		return ""
@@ -216,22 +221,74 @@ func pickLyricsInstanceWithSong(adamId, language string, candidates []string) st
 	if err != nil {
 		return ""
 	}
+
+	type probe struct {
+		id string
+		ok bool
+	}
+	results := make([]probe, len(candidates))
+	const lyricsProbeWorkers = 8
+	sem := make(chan struct{}, lyricsProbeWorkers)
+	var wg sync.WaitGroup
+	for i, id := range candidates {
+		wg.Add(1)
+		go func(i int, id string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			inst := GetInstance(id)
+			if inst == nil {
+				results[i] = probe{id: id, ok: false}
+				return
+			}
+			musicToken, err := GetMusicToken(inst)
+			if err != nil {
+				results[i] = probe{id: id, ok: false}
+				return
+			}
+			results[i] = probe{id: id, ok: hasLyricsCached(adamId, inst.Region, language, token, musicToken)}
+		}(i, id)
+	}
+	wg.Wait()
+
 	var hit []string
-	for _, id := range candidates {
-		inst := GetInstance(id)
-		if inst == nil {
-			continue
-		}
-		musicToken, err := GetMusicToken(inst)
-		if err != nil {
-			continue
-		}
-		if HasLyrics(adamId, inst.Region, language, token, musicToken) {
-			hit = append(hit, id)
+	for _, r := range results {
+		if r.ok {
+			hit = append(hit, r.id)
 		}
 	}
 	if len(hit) != 0 {
 		return hit[rand.Intn(len(hit))]
 	}
 	return ""
+}
+
+// lyricsAvailabilityCache memoizes per-(song, region, language) lyric
+// availability with a bounded LRU + TTL so repeat /lyrics lookups are cheap.
+var lyricsAvailabilityCache = expirable.NewLRU[string, bool](64_000, nil, 24*time.Hour)
+
+// hasLyricsCached probes whether a song has lyrics in a region/language,
+// memoizing the result (singleflight-deduped) to avoid re-hitting Apple on
+// every request.
+// hasLyricsProbe is the actual probe function used by hasLyricsCached;
+// tests may swap it.
+var hasLyricsProbe = HasLyrics
+
+func hasLyricsCached(adamId, region, language, token, musicToken string) bool {
+	cacheKey := fmt.Sprintf("lyrics/%s/%s/%s", region, language, adamId)
+	if ok, cached := lyricsAvailabilityCache.Get(cacheKey); cached {
+		return ok
+	}
+	v, err, _ := songRegionSingleFlight.Do("l:"+cacheKey, func() (interface{}, error) {
+		if hasLyricsProbe(adamId, region, language, token, musicToken) {
+			lyricsAvailabilityCache.Add(cacheKey, true)
+			return true, nil
+		}
+		lyricsAvailabilityCache.Add(cacheKey, false)
+		return false, nil
+	})
+	if err != nil {
+		return false
+	}
+	return v.(bool)
 }
