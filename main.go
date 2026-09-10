@@ -196,15 +196,22 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 		WriteLiteError(w, "invalid JSON body")
 		return
 	}
-	if req.Username == "" {
-		WriteLiteError(w, "missing username")
+	if req.Username == "" && req.Id == "" {
+		WriteLiteError(w, "missing username or id")
 		return
 	}
 
-	log.Infof("logout request for %s", req.Username)
-	if err := startLogout(req.Username); err != nil {
+	log.Infof("logout request for %s (id=%s)", req.Username, req.Id)
+	if err := startLogout(req); err != nil {
 		WriteLiteError(w, err.Error())
 		return
 	}
-	WriteLiteSuccess(w, map[string]any{"username": req.Username})
+	resp := map[string]any{}
+	if req.Id != "" {
+		resp["id"] = req.Id
+	}
+	if req.Username != "" {
+		resp["username"] = req.Username
+	}
+	WriteLiteSuccess(w, resp)
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"github.com/gofrs/uuid/v5"
 	log "github.com/sirupsen/logrus"
 	"os"
 	"os/exec"
@@ -25,9 +26,12 @@ type LoginRequest struct {
 	Code     string `json:"code"`
 }
 
-// LogoutRequest is the JSON body of POST /logout.
+// LogoutRequest is the JSON body of POST /logout. Either username (an Apple
+// account name) or id (the instance UUID) may be supplied; id takes
+// precedence when both are present.
 type LogoutRequest struct {
 	Username string `json:"username"`
+	Id       string `json:"id"`
 }
 
 // LoginState captures the progress of an in-flight account login.
@@ -299,9 +303,29 @@ func RemoveWrapperDataQuiet(id string) error {
 	return nil
 }
 
-// startLogout terminates and removes an account instance.
-func startLogout(username string) error {
-	id := InstanceID(username)
+// resolveLogoutID determines the instance id to log out from a request that
+// supplies either the account username or the instance UUID (id wins).
+func resolveLogoutID(req LogoutRequest) (string, error) {
+	if req.Id != "" {
+		parsed, err := uuid.FromString(strings.TrimSpace(req.Id))
+		if err != nil {
+			return "", errors.New("invalid id (expected a UUID)")
+		}
+		return parsed.String(), nil
+	}
+	if req.Username == "" {
+		return "", errors.New("missing username or id")
+	}
+	return InstanceID(req.Username), nil
+}
+
+// startLogout terminates and removes an account instance identified by either
+// its username or its instance UUID.
+func startLogout(req LogoutRequest) error {
+	id, err := resolveLogoutID(req)
+	if err != nil {
+		return err
+	}
 	instance := GetInstance(id)
 	if instance == nil {
 		return errors.New("no such account")
@@ -312,6 +336,6 @@ func startLogout(username string) error {
 	}
 	RemoveWrapperData(id)
 	SaveInstances()
-	log.Infof("[wrapper %s] logged out %s", shortID(id), username)
+	log.Infof("[wrapper %s] logged out %s", shortID(id), id)
 	return nil
 }
