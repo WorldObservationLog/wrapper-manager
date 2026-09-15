@@ -62,6 +62,30 @@ func fetchFromLite(inst *WrapperInstance, method, path string, query url.Values,
 	return respBody, envelope.Code, nil
 }
 
+// prefetchKeyURI is the shared context-template key URI used by upstream
+// wrapper-lite (adamId=0). Requesting it with a real adamId is rejected by
+// upstream because the resulting key cannot decrypt any track.
+const prefetchKeyURI = "skd://itunes.apple.com/P000000000/s1/e1"
+
+// validateKeyRequest enforces the upstream wrapper-lite /key contract:
+// adamId is required, uri is required, and the prefetch context-template URI
+// may only be used with adamId=0. Validating here fails bad requests fast,
+// without selecting and calling a lite instance.
+func validateKeyRequest(q url.Values) error {
+	adamId := q.Get("adamId")
+	if adamId == "" {
+		return fmt.Errorf("missing adamId")
+	}
+	uri := q.Get("uri")
+	if uri == "" {
+		return fmt.Errorf("missing uri")
+	}
+	if adamId != "0" && uri == prefetchKeyURI {
+		return fmt.Errorf("invalid uri for adamId")
+	}
+	return nil
+}
+
 // cacheablePaths are the wrapper-lite resource endpoints Cloudflare is
 // allowed to cache on success. /license, /login, /logout and /status are
 // deliberately excluded.
@@ -154,12 +178,11 @@ func handleLiteEndpoint(w http.ResponseWriter, r *http.Request) {
 		}
 		selectAndProxy(w, r, path, adamId, nil)
 	case "/key":
-		adamId := r.URL.Query().Get("adamId")
-		if adamId == "" {
-			WriteLiteError(w, "missing adamId")
+		if verr := validateKeyRequest(r.URL.Query()); verr != nil {
+			WriteLiteError(w, verr.Error())
 			return
 		}
-		selectAndProxy(w, r, path, adamId, nil)
+		selectAndProxy(w, r, path, r.URL.Query().Get("adamId"), nil)
 	case "/lyrics":
 		adamId := r.URL.Query().Get("adamId")
 		if adamId == "" {
@@ -170,9 +193,13 @@ func handleLiteEndpoint(w http.ResponseWriter, r *http.Request) {
 		if language == "" {
 			language = "en"
 		}
+		// script selects the transliteration script (upstream default
+		// en-Latn); it is forwarded untouched, and used for the availability
+		// probe so probing matches what the caller will actually request.
+		script := r.URL.Query().Get("script")
 		// Prefer an instance that has lyrics; otherwise fall back to the
 		// generic region-candidate selection (with per-instance retry).
-		if instID := SelectInstanceForLyrics(adamId, language); instID != "" {
+		if instID := SelectInstanceForLyrics(adamId, language, script); instID != "" {
 			if inst := GetInstance(instID); inst != nil {
 				proxyToLite(w, inst, r.Method, path, r.URL.Query(), nil)
 				return

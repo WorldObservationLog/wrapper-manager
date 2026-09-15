@@ -174,7 +174,7 @@ func SelectInstance(adamId string) (string, error) {
 //     language (previous behaviour).
 //
 // Returns "" when nothing can serve the song.
-func SelectInstanceForLyrics(adamId string, language string) string {
+func SelectInstanceForLyrics(adamId string, language string, script string) string {
 	instances := SnapshotInstances()
 	if len(instances) == 0 {
 		return ""
@@ -194,12 +194,12 @@ func SelectInstanceForLyrics(adamId string, language string) string {
 	// Among the language-matching candidates, keep only those whose region
 	// catalog actually has the song.
 	if len(tier1) > 0 {
-		if id := pickLyricsInstanceWithSong(adamId, language, tier1); id != "" {
+		if id := pickLyricsInstanceWithSong(adamId, language, script, tier1); id != "" {
 			return id
 		}
 	}
 	// Tier 2: fall back to any instance whose catalog has the song.
-	if id := pickLyricsInstanceWithSong(adamId, language, tier2); id != "" {
+	if id := pickLyricsInstanceWithSong(adamId, language, script, tier2); id != "" {
 		return id
 	}
 	return ""
@@ -213,7 +213,7 @@ func SelectInstanceForLyrics(adamId string, language string) string {
 // (song, region, language) for 24h, so repeated lyric requests do not re-probe
 // every instance. This is what keeps /lyrics latency low: probing 19+ region
 // catalogs serially on every request was the dominant cost.
-func pickLyricsInstanceWithSong(adamId, language string, candidates []string) string {
+func pickLyricsInstanceWithSong(adamId, language, script string, candidates []string) string {
 	if len(candidates) == 0 {
 		return ""
 	}
@@ -246,7 +246,7 @@ func pickLyricsInstanceWithSong(adamId, language string, candidates []string) st
 				results[i] = probe{id: id, ok: false}
 				return
 			}
-			results[i] = probe{id: id, ok: hasLyricsCached(adamId, inst.Region, language, token, musicToken)}
+			results[i] = probe{id: id, ok: hasLyricsCached(adamId, inst.Region, language, script, token, musicToken)}
 		}(i, id)
 	}
 	wg.Wait()
@@ -274,13 +274,18 @@ var lyricsAvailabilityCache = expirable.NewLRU[string, bool](64_000, nil, 24*tim
 // tests may swap it.
 var hasLyricsProbe = HasLyrics
 
-func hasLyricsCached(adamId, region, language, token, musicToken string) bool {
-	cacheKey := fmt.Sprintf("lyrics/%s/%s/%s", region, language, adamId)
+func hasLyricsCached(adamId, region, language, script, token, musicToken string) bool {
+	// Normalize an empty script to the upstream default so "" and "en-Latn"
+	// share one cache entry instead of probing twice for the same thing.
+	if script == "" {
+		script = defaultLyricsScript
+	}
+	cacheKey := fmt.Sprintf("lyrics/%s/%s/%s/%s", region, language, script, adamId)
 	if ok, cached := lyricsAvailabilityCache.Get(cacheKey); cached {
 		return ok
 	}
 	v, err, _ := songRegionSingleFlight.Do("l:"+cacheKey, func() (interface{}, error) {
-		if hasLyricsProbe(adamId, region, language, token, musicToken) {
+		if hasLyricsProbe(adamId, region, language, script, token, musicToken) {
 			lyricsAvailabilityCache.Add(cacheKey, true)
 			return true, nil
 		}
