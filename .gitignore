@@ -42,3 +42,6 @@ go.work.sum
 
 # visualization tool workspace copies
 /viz/
+
+# guest image build output (guest/build.sh <dir>)
+/dist-guest/

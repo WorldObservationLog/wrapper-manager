@@ -24,11 +24,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y busybox-static cpio gzip e2fsprogs
 
-      - name: Stage busybox
-        run: |
-          mkdir -p guest/overlay/bin
-          cp /bin/busybox guest/overlay/bin/busybox
-
       - name: Build guest assets
         run: |
           chmod +x guest/build.sh guest/init

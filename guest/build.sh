@@ -21,10 +21,16 @@ GUEST_DIR="$REPO_DIR/guest"
 OVERLAY="$GUEST_DIR/overlay"
 OUT_DIR="${1:-$GUEST_DIR/out}"
 
+# Normalize OUT_DIR to an absolute path: the initramfs step runs inside a
+# subshell that cd's into the overlay, so a relative output path would resolve
+# against the wrong directory and fail.
+mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
+
 echo "[build] output dir: $OUT_DIR"
 rm -rf "$OVERLAY"
 mkdir -p "$OVERLAY/bin" "$OVERLAY/etc/ssl/certs" "$OVERLAY/lib64" \
-         "$OVERLAY/lib/x86_64-linux-gnu" "$OUT_DIR"
+         "$OVERLAY/lib/x86_64-linux-gnu"
 
 # 1. Static wrapper-manager binary.
 echo "[build] building static wrapper-manager..."
