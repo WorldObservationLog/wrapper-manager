@@ -22,6 +22,90 @@ var instancesMu sync.RWMutex
 // the other instances absorb load.
 const instanceConcurrency = 2
 
+// FairPlay circuit breaker. When Apple refuses to process the content key
+// (KDCanProcessCKC errors) an instance cannot serve /key; rather than evicting
+// the account (its credentials and subscription may be fine), the instance is
+// temporarily excluded from selection and retried after a cooldown.
+//
+// Circuit state lives outside WrapperInstance so that struct keeps its value
+// semantics (it is copied while iterating persisted instances and serialised
+// to JSON).
+const (
+	fairplayFailThreshold = 5
+	fairplayCooldown      = 5 * time.Minute
+)
+
+type fairplayCircuitState struct {
+	fails     int
+	openUntil time.Time
+}
+
+var fairplayCircuits = struct {
+	sync.Mutex
+	m map[string]*fairplayCircuitState
+}{m: make(map[string]*fairplayCircuitState)}
+
+// circuitOpen reports whether the instance identified by id is temporarily
+// excluded after repeated FairPlay failures. The circuit closes itself once
+// the cooldown elapses, giving the instance another chance.
+func circuitOpen(id string) bool {
+	fairplayCircuits.Lock()
+	defer fairplayCircuits.Unlock()
+	st, ok := fairplayCircuits.m[id]
+	if !ok || st.openUntil.IsZero() {
+		return false
+	}
+	if time.Now().After(st.openUntil) {
+		st.openUntil = time.Time{}
+		st.fails = 0
+		return false
+	}
+	return true
+}
+
+// recordFairplayFailure counts a FairPlay failure for the instance and opens
+// the circuit once the threshold is reached. It returns true when the circuit
+// just opened (so the caller can log it once).
+func recordFairplayFailure(id string) bool {
+	fairplayCircuits.Lock()
+	defer fairplayCircuits.Unlock()
+	st, ok := fairplayCircuits.m[id]
+	if !ok {
+		st = &fairplayCircuitState{}
+		fairplayCircuits.m[id] = st
+	}
+	if !st.openUntil.IsZero() && time.Now().Before(st.openUntil) {
+		return false // already open
+	}
+	st.fails++
+	if st.fails >= fairplayFailThreshold {
+		st.openUntil = time.Now().Add(fairplayCooldown)
+		st.fails = 0
+		return true
+	}
+	return false
+}
+
+// degradedCount returns how many registered instances are currently excluded
+// from selection because their FairPlay circuit is open.
+func degradedCount() int {
+	n := 0
+	for _, inst := range SnapshotInstances() {
+		if circuitOpen(inst.Id) {
+			n++
+		}
+	}
+	return n
+}
+
+// resetFairplayCircuit clears any circuit state for an instance that is
+// starting a fresh lifecycle.
+func resetFairplayCircuit(id string) {
+	fairplayCircuits.Lock()
+	delete(fairplayCircuits.m, id)
+	fairplayCircuits.Unlock()
+}
+
 type WrapperInstance struct {
 	Id        string    `json:"id"`
 	Region    string    `json:"region"`
@@ -122,8 +206,10 @@ func InsertInstance(instance *WrapperInstance) {
 		}
 	}
 	// A fresh lifecycle for this instance id: reset the unhealthy-once guard
-	// so a re-logged-in instance can be deactivated/removed again if needed.
+	// so a re-logged-in instance can be deactivated/removed again if needed,
+	// and clear any FairPlay circuit left over from the previous lifecycle.
 	unhealthyOnce.Delete(instance.Id)
+	resetFairplayCircuit(instance.Id)
 	Instances = append(Instances, instance)
 }
 

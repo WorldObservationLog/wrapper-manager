@@ -87,13 +87,28 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 	return val.(bool), nil
 }
 
+// selectableInstances returns the registered instances that are currently
+// eligible to serve requests: instances whose FairPlay circuit is open (after
+// repeated key-processing failures) are skipped until the cooldown elapses.
+func selectableInstances() []*WrapperInstance {
+	all := SnapshotInstances()
+	out := make([]*WrapperInstance, 0, len(all))
+	for _, inst := range all {
+		if circuitOpen(inst.Id) {
+			continue
+		}
+		out = append(out, inst)
+	}
+	return out
+}
+
 // SelectInstances returns ids of all instances whose region can serve the
 // given adam ID (prefers songs, falls back to music-videos). Region probes are
 // run concurrently (bounded) so first-request latency does not scale linearly
 // with instance count. The list is shuffled so concurrent requests spread
 // across candidates instead of all hammering the first one.
 func SelectInstances(adamId string) ([]string, error) {
-	instances := SnapshotInstances()
+	instances := selectableInstances()
 	if len(instances) == 0 {
 		return nil, nil
 	}
@@ -175,7 +190,7 @@ func SelectInstance(adamId string) (string, error) {
 //
 // Returns "" when nothing can serve the song.
 func SelectInstanceForLyrics(adamId string, language string, script string) string {
-	instances := SnapshotInstances()
+	instances := selectableInstances()
 	if len(instances) == 0 {
 		return ""
 	}

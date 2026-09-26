@@ -256,5 +256,7 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		"regions":     regions,
 		"clientCount": len(instances),
 		"ready":       isReady(),
+		// Instances temporarily excluded after repeated FairPlay failures.
+		"degraded": degradedCount(),
 	})
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/attribute"
@@ -47,8 +48,7 @@ func otelSeverity(lv logrus.Level) log.Severity {
 // skipped: they are high-volume debug relays, not manager diagnostics, and
 // would drown the OTLP backend.
 func (h *logrusHook) Fire(entry *logrus.Entry) error {
-	msg := entry.Message
-	if len(msg) >= 10 && msg[:10] == "[wrapper " {
+	if isWrapperRelayNoise(entry) {
 		return nil
 	}
 	lp := global.GetLoggerProvider()
@@ -73,6 +73,28 @@ func (h *logrusHook) Fire(entry *logrus.Entry) error {
 
 	logger.Emit(h.ctx, rec)
 	return nil
+}
+
+// isWrapperRelayNoise reports whether a log entry is high-volume relay of
+// wrapper-lite process output that should not be exported to OTLP.
+//
+// Two things are always kept because they are the actionable signals:
+//   - any entry logged at WARN or above (manager health events such as
+//     circuit-breaker trips and account state changes), regardless of its
+//     message shape;
+//   - lite relay lines that carry lite's own [ERROR]/[WARN] severity
+//     (FairPlay failures, subscription problems, handler exceptions).
+func isWrapperRelayNoise(entry *logrus.Entry) bool {
+	// logrus levels run from Panic(0) to Trace(6): lower means more severe, so
+	// anything more severe than Info is always exported.
+	if entry.Level < logrus.InfoLevel {
+		return false
+	}
+	msg := entry.Message
+	if !strings.HasPrefix(msg, "[wrapper ") {
+		return false
+	}
+	return !strings.Contains(msg, "[ERROR]") && !strings.Contains(msg, "[WARN")
 }
 
 // logrusFieldAttribute converts a logrus data field value into an OTel

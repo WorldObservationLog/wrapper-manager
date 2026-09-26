@@ -439,6 +439,14 @@ func logLiteOutput(instance *WrapperInstance, r io.Reader) {
 			once.(*sync.Once).Do(func() {
 				handleSessionInvalid(instance, line)
 			})
+		case isFairplayFailureSignal(line):
+			// Not account-fatal: Apple refused to process the content key for
+			// this instance, so /key cannot succeed here. Count failures and
+			// temporarily exclude the instance once the threshold is hit.
+			if recordFairplayFailure(instance.Id) {
+				log.Warnf("[wrapper %s] fairplay failures reached %d; excluding instance for %s (account kept, retry after cooldown)",
+					shortID(instance.Id), fairplayFailThreshold, fairplayCooldown)
+			}
 		}
 	}
 }
@@ -466,6 +474,15 @@ func isSessionInvalidSignal(line string) bool {
 		}
 	}
 	return false
+}
+
+// isFairplayFailureSignal reports a log line where Apple refused to process the
+// content key for this instance (FairPlay). The account is not necessarily
+// broken — this is handled by a temporary circuit break, not by removing the
+// account.
+func isFairplayFailureSignal(line string) bool {
+	l := strings.ToLower(line)
+	return strings.Contains(l, "fairplay error") || strings.Contains(l, "kdcanprocessckc")
 }
 
 // handleSubscriptionDead kills the instance, removes it from the registry and
