@@ -32,10 +32,15 @@ var (
 func GetHttpClient() *http.Client {
 	httpClientOnce.Do(func() {
 		tr := &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			MaxIdleConns:          200,
-			MaxIdleConnsPerHost:   32,
-			IdleConnTimeout:       90 * time.Second,
+			Proxy:               http.ProxyFromEnvironment,
+			MaxIdleConns:        200,
+			MaxIdleConnsPerHost: 32,
+			// wrapper-lite closes idle keep-alive connections after 30s
+			// (httplib set_keep_alive_timeout(30)), so the client must retire
+			// idle connections sooner than that. With a longer client timeout
+			// the pool hands out connections the server has already closed,
+			// producing a burst of "EOF" transport errors.
+			IdleConnTimeout:       20 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ResponseHeaderTimeout: 30 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
