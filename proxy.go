@@ -38,9 +38,10 @@ func fetchFromLite(inst *WrapperInstance, method, path string, query url.Values,
 	req.Header.Set("Content-Type", "application/json")
 
 	// Bound a single forwarded request so a hung lite call cannot hold the
-	// per-instance slot (and thus the whole manager) indefinitely. If the
-	// caller passed a deadline (http server), respect the shorter one.
-	const upstreamTimeout = 30 * time.Second
+	// per-instance slot (and thus the whole manager) indefinitely. Measured
+	// latency shows healthy requests complete within ~1s with nothing in the
+	// 5-15s band, so a hung instance is cut off well before the old 30s.
+	const upstreamTimeout = 12 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), upstreamTimeout)
 	defer cancel()
 	req = req.WithContext(ctx)
@@ -117,10 +118,41 @@ func proxyToLite(w http.ResponseWriter, inst *WrapperInstance, method, path stri
 	writeLiteBody(w, path, respBody, code)
 }
 
+// Retry policy for lite business failures. A request is retried on another
+// instance only when the failure could plausibly differ per instance; retrying
+// a content-level verdict (e.g. "this track has no lyrics in that language")
+// multiplies latency for an identical answer, and walking every candidate is
+// what made /lyrics slow.
+const (
+	maxRetryAttempts   = 3
+	overallRetryBudget = 20 * time.Second
+)
+
+// shouldRetryLiteFailure reports whether a lite business failure (non-zero
+// code) is worth retrying on another instance.
+//
+// Not retryable:
+//   - 400: the caller's request is malformed; every instance returns the same.
+//   - /lyrics 404: Apple reported no lyrics for that language, which is a
+//     content-level result identical on every instance.
+//
+// Everything else (5xx, /m3u8 404, ...) may be instance-specific and is
+// retried on another candidate.
+func shouldRetryLiteFailure(path string, code int) bool {
+	if code == 400 {
+		return false
+	}
+	if path == "/lyrics" && code == 404 {
+		return false
+	}
+	return true
+}
+
 // selectAndProxy picks an instance able to serve adamId and proxies the
-// request to it. If the first instance fails at the lite business layer
-// (e.g. dead account / no asset), it retries once on another available
-// instance before returning the failure.
+// request to it. If the selected instance fails at the lite business layer in
+// a way that another instance might serve, it retries on further candidates,
+// bounded by both an attempt count and an overall time budget so a single
+// request cannot walk every instance (or stack several upstream timeouts).
 func selectAndProxy(w http.ResponseWriter, r *http.Request, path string, adamID string, body []byte) {
 	candidates, err := SelectInstances(adamID)
 	if err != nil {
@@ -135,21 +167,29 @@ func selectAndProxy(w http.ResponseWriter, r *http.Request, path string, adamID 
 	query := r.URL.Query()
 	var lastBody []byte
 	var lastCode int
+	attempts := 0
+	deadline := time.Now().Add(overallRetryBudget)
 	for i, id := range candidates {
+		if attempts >= maxRetryAttempts || time.Now().After(deadline) {
+			break
+		}
 		inst := GetInstance(id)
 		if inst == nil {
 			continue
 		}
+		attempts++
 		respBody, code, ferr := fetchFromLite(inst, r.Method, path, query, body)
 		if ferr != nil {
 			log.Warnf("%s on instance %s transport error: %v", path, shortID(id), ferr)
 			continue
 		}
-		if code == 0 || i == len(candidates)-1 {
+		// Return on success, on the final candidate, or when the failure is a
+		// content-level verdict that another instance cannot change.
+		if code == 0 || i == len(candidates)-1 || !shouldRetryLiteFailure(path, code) {
 			writeLiteBody(w, path, respBody, code)
 			return
 		}
-		// Business failure on a non-final candidate: remember and try another.
+		// Instance-level failure: remember it and try another candidate.
 		lastBody = respBody
 		lastCode = code
 		log.Infof("%s on instance %s failed (code %d); trying another", path, shortID(id), code)
