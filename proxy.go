@@ -107,17 +107,6 @@ func writeLiteBody(w http.ResponseWriter, path string, respBody []byte, liteCode
 	_, _ = w.Write(respBody)
 }
 
-// proxyToLite forwards an HTTP request to the given lite instance and writes
-// the lite response through unchanged (used when no retry logic is needed).
-func proxyToLite(w http.ResponseWriter, inst *WrapperInstance, method, path string, query url.Values, body []byte) {
-	respBody, code, err := fetchFromLite(inst, method, path, query, body)
-	if err != nil {
-		WriteLiteError(w, fmt.Sprintf("upstream error: %v", err))
-		return
-	}
-	writeLiteBody(w, path, respBody, code)
-}
-
 // Retry policy for lite business failures. A request is retried on another
 // instance only when the failure could plausibly differ per instance; retrying
 // a content-level verdict (e.g. "this track has no lyrics in that language")
@@ -148,13 +137,30 @@ func shouldRetryLiteFailure(path string, code int) bool {
 	return true
 }
 
+// selectCandidates returns the instances able to serve adamId for path. For
+// /lyrics, regions whose catalog says hasLyrics are preferred; if none do
+// (including when Apple omits the field) it falls back to every region that
+// has the song, so an instance still answers with the real result. The
+// language and script query parameters play no part in routing: they are
+// forwarded untouched and only decide whether translation/transliteration
+// metadata is attached to the lyrics.
+func selectCandidates(path, adamID string) ([]string, error) {
+	if path == "/lyrics" {
+		ids, err := SelectInstancesWithLyrics(adamID)
+		if err != nil || len(ids) > 0 {
+			return ids, err
+		}
+	}
+	return SelectInstances(adamID)
+}
+
 // selectAndProxy picks an instance able to serve adamId and proxies the
 // request to it. If the selected instance fails at the lite business layer in
 // a way that another instance might serve, it retries on further candidates,
 // bounded by both an attempt count and an overall time budget so a single
 // request cannot walk every instance (or stack several upstream timeouts).
 func selectAndProxy(w http.ResponseWriter, r *http.Request, path string, adamID string, body []byte) {
-	candidates, err := SelectInstances(adamID)
+	candidates, err := selectCandidates(path, adamID)
 	if err != nil {
 		WriteLiteError(w, err.Error())
 		return
@@ -210,7 +216,7 @@ func handleLiteEndpoint(w http.ResponseWriter, r *http.Request) {
 	case "/status":
 		handleStatus(w, r)
 		return
-	case "/m3u8", "/webplayback":
+	case "/m3u8", "/webplayback", "/lyrics":
 		adamId := r.URL.Query().Get("adamId")
 		if adamId == "" {
 			WriteLiteError(w, "missing adamId")
@@ -223,29 +229,6 @@ func handleLiteEndpoint(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		selectAndProxy(w, r, path, r.URL.Query().Get("adamId"), nil)
-	case "/lyrics":
-		adamId := r.URL.Query().Get("adamId")
-		if adamId == "" {
-			WriteLiteError(w, "missing adamId")
-			return
-		}
-		language := r.URL.Query().Get("language")
-		if language == "" {
-			language = "en"
-		}
-		// script selects the transliteration script (upstream default
-		// en-Latn); it is forwarded untouched, and used for the availability
-		// probe so probing matches what the caller will actually request.
-		script := r.URL.Query().Get("script")
-		// Prefer an instance that has lyrics; otherwise fall back to the
-		// generic region-candidate selection (with per-instance retry).
-		if instID := SelectInstanceForLyrics(adamId, language, script); instID != "" {
-			if inst := GetInstance(instID); inst != nil {
-				proxyToLite(w, inst, r.Method, path, r.URL.Query(), nil)
-				return
-			}
-		}
-		selectAndProxy(w, r, path, adamId, nil)
 	case "/license":
 		if r.Method != http.MethodPost {
 			WriteLiteError(w, "method not allowed")

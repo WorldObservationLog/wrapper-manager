@@ -116,8 +116,8 @@ content-type 一律 `application/json`。
 
 实例选择复用旧 `SelectInstance` 思路：对每个候选实例的 region 用 `checkAvailableOnRegion`
 （Apple catalog 探测，带 SongRegionCache/singleflight）过滤；没有可用实例返回
-`code:-1,msg:"no available instance"`（客户端可重试）。`/lyrics` 额外用旧
-`SelectInstanceForLyrics`（HEAD 探测）优先选有歌词的实例。
+`code:-1,msg:"no available instance"`（客户端可重试）。`/lyrics` 在同一次 catalog 探测里
+读取 `data[0].attributes.hasLyrics`，优先选有歌词的区域（无则回退到有歌的区域）。
 
 ### 4.2 管理端点（新增）
 
@@ -153,8 +153,8 @@ content-type 一律 `application/json`。
 | `structs.go` | 删除（旧 bson 协议）或清理为 HTTP 请求/响应结构 |
 | `m3u8.go` | 删除（旧 TCP 直连）；转发逻辑并入 proxy 模块 |
 | `token.go` | 保留 `GetToken`（region 探测用）+ 读 base-dir 文件的新函数 |
-| `region.go` | 保留 `checkAvailableOnRegion` / `SelectInstance` / `SelectInstanceForLyrics`（现在作用于 HTTP 实例的 region 字段） |
-| `lyrics.go` / `webplay.go` | 直连 Apple 的 Lyrics/License/WebPlayback 移除（由 lite 承担）；只留歌词 HEAD 探测（可留可删，取决于是否用旧 SelectInstanceForLyrics 路径） |
+| `region.go` | 保留 `checkAvailableOnRegion` / `SelectInstance`（现在作用于 HTTP 实例的 region 字段）；catalog 探测同时记录 `hasLyrics`，供 `/lyrics` 过滤 |
+| `lyrics.go` / `webplay.go` | 直连 Apple 的 Lyrics/License/WebPlayback 移除（由 lite 承担）；歌词不再做单独的 HEAD 探测 |
 | `port.go` | 沿用 `GenerateUniquePort`（单端口即可） |
 | `proto/` | 删除 |
 | `Dockerfile` / `docker-compose.yml` | 更新：镜像内需要 `unshare`/userns 支持（`--privileged` 或 seccomp 放开），数据卷改为 `data/`；移除 EXPOSE gRPC 8080 → HTTP 端口 |

@@ -12,18 +12,51 @@ import (
 	"time"
 )
 
+// songInfo is what one catalog lookup tells us about an adam ID in one
+// storefront region.
+type songInfo struct {
+	// available: the catalog has the item in this region.
+	available bool
+	// hasLyrics: data[0].attributes.hasLyrics from the same response (songs
+	// only; always false for music-videos).
+	hasLyrics bool
+}
+
 var (
-	// SongRegionCache memoizes region availability for (song|mv, region, adamId).
+	// SongRegionCache memoizes catalog lookups for (song|mv, region, adamId).
 	// LRU-bounded (256k entries) with a 24h TTL so memory does not grow without
 	// bound under a large, diverse adamId workload.
-	SongRegionCache        = expirable.NewLRU[string, bool](256_000, nil, 24*time.Hour)
+	SongRegionCache        = expirable.NewLRU[string, songInfo](256_000, nil, 24*time.Hour)
 	songRegionSingleFlight singleflight.Group
 )
 
-// checkAvailableOnRegion probes Apple's catalog to test whether an adam ID is
-// available in the given storefront region. mv switches between songs and
-// music-videos. Results are memoized.
-func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error) {
+// parseCatalogItem interprets a catalog songs/music-videos response. cacheable
+// is false for an Apple "errors" payload, which may be transient and must not
+// be remembered as "not available".
+func parseCatalogItem(body []byte) (info songInfo, cacheable bool, err error) {
+	var payload struct {
+		Errors []json.RawMessage `json:"errors"`
+		Data   []struct {
+			Attributes struct {
+				HasLyrics bool `json:"hasLyrics"`
+			} `json:"attributes"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return songInfo{}, false, err
+	}
+	if payload.Errors != nil {
+		return songInfo{}, false, nil
+	}
+	if len(payload.Data) == 0 {
+		return songInfo{}, true, nil
+	}
+	return songInfo{available: true, hasLyrics: payload.Data[0].Attributes.HasLyrics}, true, nil
+}
+
+// lookupSong queries Apple's catalog for an adam ID in the given storefront
+// region. mv switches between songs and music-videos. Results are memoized.
+func lookupSong(adamId string, region string, mv bool) (songInfo, error) {
 	var cacheKey string
 	if mv {
 		cacheKey = fmt.Sprintf("mv/%s/%s", region, adamId)
@@ -36,7 +69,7 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 
 	val, err, _ := songRegionSingleFlight.Do(cacheKey, func() (interface{}, error) {
 		if adamId == "0" {
-			return true, nil
+			return songInfo{available: true}, nil
 		}
 
 		var url string
@@ -47,11 +80,11 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 		}
 		token, err := GetToken()
 		if err != nil {
-			return false, err
+			return songInfo{}, err
 		}
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
-			return false, err
+			return songInfo{}, err
 		}
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 		req.Header.Set("User-Agent", "Mozilla/5.0 ...")
@@ -59,32 +92,39 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 
 		resp, err := GetHttpClient().Do(req)
 		if err != nil {
-			return false, err
+			return songInfo{}, err
 		}
 		defer func() { _ = resp.Body.Close() }()
 
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return false, err
+			return songInfo{}, err
 		}
-		var respJson map[string][]interface{}
-		if err := json.Unmarshal(respBody, &respJson); err != nil {
-			return false, err
+		info, cacheable, err := parseCatalogItem(respBody)
+		if err != nil {
+			return songInfo{}, err
 		}
-
-		if respJson["errors"] != nil {
-			return false, nil
+		if cacheable {
+			SongRegionCache.Add(cacheKey, info)
 		}
-
-		available := respJson["data"] != nil
-		SongRegionCache.Add(cacheKey, available)
-		return available, nil
+		return info, nil
 	})
 
 	if err != nil {
-		return false, err
+		return songInfo{}, err
 	}
-	return val.(bool), nil
+	return val.(songInfo), nil
+}
+
+// songLookup is the catalog lookup used by instance selection; tests may swap
+// it.
+var songLookup = lookupSong
+
+// checkAvailableOnRegion reports whether an adam ID is available in the given
+// storefront region.
+func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error) {
+	info, err := songLookup(adamId, region, mv)
+	return info.available, err
 }
 
 // selectableInstances returns the registered instances that are currently
@@ -108,6 +148,18 @@ func selectableInstances() []*WrapperInstance {
 // with instance count. The list is shuffled so concurrent requests spread
 // across candidates instead of all hammering the first one.
 func SelectInstances(adamId string) ([]string, error) {
+	return selectInstances(adamId, false)
+}
+
+// SelectInstancesWithLyrics is SelectInstances restricted to instances whose
+// region reports hasLyrics for the song. It reuses the same catalog lookup (and
+// cache) as SelectInstances, so it costs no extra Apple requests. Music-videos
+// carry no lyrics, so there is no music-video fallback.
+func SelectInstancesWithLyrics(adamId string) ([]string, error) {
+	return selectInstances(adamId, true)
+}
+
+func selectInstances(adamId string, needLyrics bool) ([]string, error) {
 	instances := selectableInstances()
 	if len(instances) == 0 {
 		return nil, nil
@@ -128,7 +180,7 @@ func SelectInstances(adamId string) ([]string, error) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			ok, err := checkAvailableOnRegion(adamId, inst.Region, false)
+			info, err := songLookup(adamId, inst.Region, false)
 			if err != nil {
 				// On probe error treat the region as unavailable rather than
 				// failing the whole request (matches old per-region semantics
@@ -136,7 +188,7 @@ func SelectInstances(adamId string) ([]string, error) {
 				results[i] = res{id: inst.Id, ok: false}
 				return
 			}
-			results[i] = res{id: inst.Id, ok: ok}
+			results[i] = res{id: inst.Id, ok: info.available && (!needLyrics || info.hasLyrics)}
 		}(i, inst)
 	}
 	wg.Wait()
@@ -148,7 +200,7 @@ func SelectInstances(adamId string) ([]string, error) {
 		}
 	}
 	// Fall back to music-videos only when no song hit was found.
-	if len(selectedInstances) == 0 {
+	if len(selectedInstances) == 0 && !needLyrics {
 		for _, inst := range instances {
 			ok, err := checkAvailableOnRegion(adamId, inst.Region, true)
 			if err != nil {
@@ -177,138 +229,4 @@ func SelectInstance(adamId string) (string, error) {
 		return "", nil
 	}
 	return ids[0], nil
-}
-
-// SelectInstanceForLyrics returns the id of an instance best suited to serve
-// lyrics for the given adam ID and language. Two preference tiers:
-//
-//  1. Instances whose storefront declares support for the requested language
-//     (region -> supportedLanguageTags from the Apple storefronts API) AND
-//     whose catalog has the song (region probe).
-//  2. Any instance whose catalog has the song (region probe), regardless of
-//     language (previous behaviour).
-//
-// Returns "" when nothing can serve the song.
-func SelectInstanceForLyrics(adamId string, language string, script string) string {
-	instances := selectableInstances()
-	if len(instances) == 0 {
-		return ""
-	}
-
-	// Tier 1: prefer instances whose storefront supports the lyric language.
-	langs := ensureStorefrontLangs()
-	var tier1, tier2 []string
-	for _, instance := range instances {
-		if langs != nil && langs.regionSupportsLang(instance.Region, language) {
-			tier1 = append(tier1, instance.Id)
-		} else {
-			tier2 = append(tier2, instance.Id)
-		}
-	}
-
-	// Among the language-matching candidates, keep only those whose region
-	// catalog actually has the song.
-	if len(tier1) > 0 {
-		if id := pickLyricsInstanceWithSong(adamId, language, script, tier1); id != "" {
-			return id
-		}
-	}
-	// Tier 2: fall back to any instance whose catalog has the song.
-	if id := pickLyricsInstanceWithSong(adamId, language, script, tier2); id != "" {
-		return id
-	}
-	return ""
-}
-
-// pickLyricsInstanceWithSong filters candidate instance ids to those whose
-// region catalog has the song with the requested lyric language, and returns
-// a random one. Returns "" if none match (or probing fails).
-//
-// Candidate probes run concurrently (bounded) and results are cached per
-// (song, region, language) for 24h, so repeated lyric requests do not re-probe
-// every instance. This is what keeps /lyrics latency low: probing 19+ region
-// catalogs serially on every request was the dominant cost.
-func pickLyricsInstanceWithSong(adamId, language, script string, candidates []string) string {
-	if len(candidates) == 0 {
-		return ""
-	}
-	token, err := GetToken()
-	if err != nil {
-		return ""
-	}
-
-	type probe struct {
-		id string
-		ok bool
-	}
-	results := make([]probe, len(candidates))
-	const lyricsProbeWorkers = 8
-	sem := make(chan struct{}, lyricsProbeWorkers)
-	var wg sync.WaitGroup
-	for i, id := range candidates {
-		wg.Add(1)
-		go func(i int, id string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			inst := GetInstance(id)
-			if inst == nil {
-				results[i] = probe{id: id, ok: false}
-				return
-			}
-			musicToken, err := GetMusicToken(inst)
-			if err != nil {
-				results[i] = probe{id: id, ok: false}
-				return
-			}
-			results[i] = probe{id: id, ok: hasLyricsCached(adamId, inst.Region, language, script, token, musicToken)}
-		}(i, id)
-	}
-	wg.Wait()
-
-	var hit []string
-	for _, r := range results {
-		if r.ok {
-			hit = append(hit, r.id)
-		}
-	}
-	if len(hit) != 0 {
-		return hit[rand.Intn(len(hit))]
-	}
-	return ""
-}
-
-// lyricsAvailabilityCache memoizes per-(song, region, language) lyric
-// availability with a bounded LRU + TTL so repeat /lyrics lookups are cheap.
-var lyricsAvailabilityCache = expirable.NewLRU[string, bool](64_000, nil, 24*time.Hour)
-
-// hasLyricsCached probes whether a song has lyrics in a region/language,
-// memoizing the result (singleflight-deduped) to avoid re-hitting Apple on
-// every request.
-// hasLyricsProbe is the actual probe function used by hasLyricsCached;
-// tests may swap it.
-var hasLyricsProbe = HasLyrics
-
-func hasLyricsCached(adamId, region, language, script, token, musicToken string) bool {
-	// Normalize an empty script to the upstream default so "" and "en-Latn"
-	// share one cache entry instead of probing twice for the same thing.
-	if script == "" {
-		script = defaultLyricsScript
-	}
-	cacheKey := fmt.Sprintf("lyrics/%s/%s/%s/%s", region, language, script, adamId)
-	if ok, cached := lyricsAvailabilityCache.Get(cacheKey); cached {
-		return ok
-	}
-	v, err, _ := songRegionSingleFlight.Do("l:"+cacheKey, func() (interface{}, error) {
-		if hasLyricsProbe(adamId, region, language, script, token, musicToken) {
-			lyricsAvailabilityCache.Add(cacheKey, true)
-			return true, nil
-		}
-		lyricsAvailabilityCache.Add(cacheKey, false)
-		return false, nil
-	})
-	if err != nil {
-		return false
-	}
-	return v.(bool)
 }

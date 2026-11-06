@@ -97,7 +97,7 @@ instance"` (retry later).
 |---|---|---|---|
 | `GET` | `/m3u8` | `adamId` | Playlist for the item. |
 | `GET` | `/key` | `adamId`, `uri` (required) | Key/decryption context — `data` carries the `ctx`/`state` template used by AppleMusicDecrypt v3 + local Temari. The prefetch URI `skd://itunes.apple.com/P000000000/s1/e1` is only accepted with `adamId=0` (upstream rejects it for a real track). |
-| `GET` | `/lyrics` | `adamId`, `language?`, `syllable?`, `script?` | Prefers an instance whose storefront supports the language and has lyrics (probed), falls back to region selection. `script` (transliteration, default `en-Latn`, e.g. `ja-Latn`) is forwarded to the instance. |
+| `GET` | `/lyrics` | `adamId`, `language?`, `syllable?`, `script?` | Routed to an instance whose storefront region has the song with `hasLyrics: true` in the catalog (same lookup and cache as the other endpoints); if no region reports lyrics it falls back to any region with the song. `language` (translation) and `script` (transliteration, default `en-Latn`, e.g. `ja-Latn`) play no part in routing and are forwarded untouched to the instance. |
 | `GET` | `/webplayback` | `adamId` | Web-playback session data. |
 | `POST` | `/license` | JSON body `{"adamId","challenge","uri","drm-type"?}` | License request forwarded to the selected instance. Optional `drm-type`: `wv` (Widevine, default) or `pr` (PlayReady). |
 | `GET` | `/status` | — | Aggregated status: `data = {"status","regions","clientCount","ready"}`. |
