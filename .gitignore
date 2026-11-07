@@ -45,3 +45,17 @@ go.work.sum
 
 # guest image build output (guest/build.sh <dir>)
 /dist-guest/
+
+# local verification test (kept out of commits by default)
+/wrapper_recovery_test.go
+
+# local regression tests (kept out of commits by default)
+/routing_test.go
+/proxy_routing_test.go
+
+# local research / planning / runtime artifacts
+/notes/
+/RELAY-PLAN.md
+/.dsh-progress/
+/relay*.db
+/relay*.log

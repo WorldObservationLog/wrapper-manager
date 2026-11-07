@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,9 +21,11 @@ import (
 type StorefrontLangs map[string][]string
 
 var (
-	storefrontMu   sync.RWMutex
-	storefrontData StorefrontLangs
-	storefrontFile = "data/storefront_langs.json"
+	storefrontMu          sync.RWMutex
+	storefrontData        StorefrontLangs
+	storefrontFile        = "data/storefront_langs.json"
+	storefrontLastAttempt time.Time
+	storefrontAttemptGap  = 10 * time.Minute
 )
 
 // normalizeLangTag normalizes a language request/tag to a comparable prefix:
@@ -96,10 +99,11 @@ func saveStorefrontLangsFile(m StorefrontLangs) {
 	_ = os.WriteFile(storefrontFile, data, 0o644)
 }
 
-// fetchStorefrontLangs calls the Apple Music storefronts API (requires the
-// dev token from GetToken) and builds the region -> language-tags mapping.
+// fetchStorefrontLangs calls the Apple Music storefronts API using a token
+// borrowed from a wrapper-lite instance. wrapper-lite owns token refresh; the
+// manager never scrapes music.apple.com itself.
 func fetchStorefrontLangs() (StorefrontLangs, error) {
-	token, err := GetToken()
+	token, err := getAnyDevToken()
 	if err != nil {
 		return nil, fmt.Errorf("get dev token: %w", err)
 	}
@@ -111,6 +115,11 @@ func fetchStorefrontLangs() (StorefrontLangs, error) {
 	req.Header.Set("Origin", "https://music.apple.com")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 
+	// This lookup is on the first /lyrics request, so keep it short: a slow
+	// Apple response must not stall the request for the client's 60s timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
 	resp, err := GetHttpClient().Do(req)
 	if err != nil {
 		return nil, err
@@ -147,8 +156,9 @@ func fetchStorefrontLangs() (StorefrontLangs, error) {
 }
 
 // ensureStorefrontLangs returns the region->language mapping, loading from
-// disk first and refreshing from the API when unavailable. Results are cached
-// in memory and persisted to disk.
+// disk first and refreshing from the API when unavailable. Failed attempts are
+// retried at most every storefrontAttemptGap so a missing token cannot turn
+// every lyrics request into an Apple call.
 func ensureStorefrontLangs() StorefrontLangs {
 	storefrontMu.RLock()
 	if storefrontData != nil {
@@ -158,7 +168,6 @@ func ensureStorefrontLangs() StorefrontLangs {
 	}
 	storefrontMu.RUnlock()
 
-	// Load from disk first, then fall back to the API.
 	if m := loadStorefrontLangsFile(); m != nil {
 		storefrontMu.Lock()
 		if storefrontData == nil {
@@ -167,6 +176,15 @@ func ensureStorefrontLangs() StorefrontLangs {
 		storefrontMu.Unlock()
 		return m
 	}
+
+	storefrontMu.Lock()
+	if !storefrontLastAttempt.IsZero() && time.Since(storefrontLastAttempt) < storefrontAttemptGap {
+		storefrontMu.Unlock()
+		return nil
+	}
+	storefrontLastAttempt = time.Now()
+	storefrontMu.Unlock()
+
 	if m, err := fetchStorefrontLangs(); err == nil {
 		saveStorefrontLangsFile(m)
 		storefrontMu.Lock()
@@ -178,14 +196,3 @@ func ensureStorefrontLangs() StorefrontLangs {
 	}
 	return nil
 }
-
-// refreshStorefrontLangsOnce is a periodic refresh hook (kept minimal: the
-// mapping rarely changes; a manager restart also reloads it).
-func refreshStorefrontLangsOnce() {
-	storefrontMu.Lock()
-	storefrontData = nil
-	storefrontMu.Unlock()
-	_ = ensureStorefrontLangs()
-}
-
-var _ = time.Second // keep time import if unused later

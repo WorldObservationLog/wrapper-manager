@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 )
@@ -367,11 +366,12 @@ func startLiteService(instance *WrapperInstance) error {
 	}
 
 	instance.Cmd = cmd
+	instance.Exited = make(chan struct{})
+	exited := instance.Exited
 	go logLiteOutput(instance, stdout)
 	go logLiteOutput(instance, stderr)
 
 	// Single waiter: resolves exactly once when the process exits.
-	exited := make(chan struct{})
 	go func() {
 		_ = cmd.Wait()
 		close(exited)
@@ -409,36 +409,54 @@ func startLiteService(instance *WrapperInstance) error {
 	return nil
 }
 
-// unhealthyOnce guards per-instance unhealthy handling so a burst of failure
-// log lines triggers removal only once.
-var unhealthyOnce sync.Map // id -> *sync.Once
-
 // logLiteOutput streams a lite instance's stderr/stdout into the manager log
-// and watches for account-failure signals. Two tiers of failure:
+// and watches for account-failure signals.
 //
-//   - Subscription dead ("No Active Subscription"): the account can no longer
-//     serve anything - remove the instance AND wipe its data (v1 parity).
-//   - Session invalid ("Check the account information you entered and try
-//     again", re-login dialog): deactivate the instance (stop selecting it,
-//     keep it out of instances.json) but KEEP the data directory so a later
-//     POST /login can re-provision it.
+// Account-level signals (subscription dead, session invalid) no longer retire
+// an instance on first sight. They are counted, the instance is restarted for
+// a few attempts, and only a signal that keeps returning across restarts
+// retires the account — see the recovery policy in instance.go. The developer
+// token fetch is not treated as account-fatal at all: it can get stuck inside
+// wrapper-lite while the account stays perfectly good, and a restart clears it.
+//
+// Retirement, when it finally happens:
+//
+//   - Subscription dead: the instance leaves the registry and its data
+//     directory is KEPT, because that directory is the only remaining evidence
+//     of why the account failed.
+//   - Session invalid: the instance leaves the registry; the data directory
+//     stays so a later POST /login can re-provision it.
 func logLiteOutput(instance *WrapperInstance, r io.Reader) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
 		line := sc.Text()
+		// lite logs every request at INFO; the manager already logs the
+		// ingress request. Drop the duplicate relay but keep all diagnostic
+		// INFO lines (subscription/session signals live there).
+		if strings.Contains(line, "[INFO ] request:") {
+			continue
+		}
 		log.Infof("[wrapper %s] %s", shortID(instance.Id), line)
 		switch {
 		case isSubscriptionDeadSignal(line):
-			once, _ := unhealthyOnce.LoadOrStore(instance.Id, &sync.Once{})
-			once.(*sync.Once).Do(func() {
+			restart, retire := noteFatalSignal(instance.Id, "subscription")
+			if retire {
 				handleSubscriptionDead(instance, line)
-			})
+			} else if restart {
+				restartForRecovery(instance, "subscription dead")
+			}
 		case isSessionInvalidSignal(line):
-			once, _ := unhealthyOnce.LoadOrStore(instance.Id, &sync.Once{})
-			once.(*sync.Once).Do(func() {
+			restart, retire := noteFatalSignal(instance.Id, "session")
+			if retire {
 				handleSessionInvalid(instance, line)
-			})
+			} else if restart {
+				restartForRecovery(instance, "session invalid")
+			}
+		case isDevTokenFailureSignal(line):
+			if noteDevTokenFailure(instance.Id) {
+				restartForRecovery(instance, "developer token fetch stuck")
+			}
 		case isFairplayFailureSignal(line):
 			// Not account-fatal: Apple refused to process the content key for
 			// this instance, so /key cannot succeed here. Count failures and
@@ -449,6 +467,22 @@ func logLiteOutput(instance *WrapperInstance, r io.Reader) {
 			}
 		}
 	}
+}
+
+// restartForRecovery restarts an instance that hit a recoverable failure
+// signal. The supervisor (wrapperDown) brings it back because NoRestart is
+// left untouched, so this only has to kill the current process.
+func restartForRecovery(instance *WrapperInstance, why string) {
+	used, budget := recoveryStats(instance.Id)
+	log.Warnf("[wrapper %s] %s; restarting to recover (restart %d/%d)",
+		shortID(instance.Id), why, used, budget)
+	go func(id string) {
+		// Let the failing lines drain before the process goes away.
+		time.Sleep(2 * time.Second)
+		if err := KillWrapper(id); err != nil {
+			log.Warnf("[wrapper %s] recovery restart could not kill the process: %v", shortID(id), err)
+		}
+	}(instance.Id)
 }
 
 // isSubscriptionDeadSignal reports a log line meaning the account's Apple
@@ -476,6 +510,15 @@ func isSessionInvalidSignal(line string) bool {
 	return false
 }
 
+// isDevTokenFailureSignal reports a log line saying wrapper-lite could not
+// fetch a developer token. This is not an account problem: the fetch runs
+// against Apple's token service and can get stuck inside the instance, after
+// which the instance reports no region and serves nothing until it is
+// restarted. It is therefore a recovery trigger, never a retirement reason.
+func isDevTokenFailureSignal(line string) bool {
+	return strings.Contains(line, "failed to get dev token")
+}
+
 // isFairplayFailureSignal reports a log line where Apple refused to process the
 // content key for this instance (FairPlay). The account is not necessarily
 // broken — this is handled by a temporary circuit break, not by removing the
@@ -485,14 +528,15 @@ func isFairplayFailureSignal(line string) bool {
 	return strings.Contains(l, "fairplay error") || strings.Contains(l, "kdcanprocessckc")
 }
 
-// handleSubscriptionDead kills the instance, removes it from the registry and
-// wipes its account data (so a later /login can re-provision it cleanly).
+// handleSubscriptionDead retires an instance whose subscription is confirmed
+// gone, i.e. the signal survived its recovery restarts. The data directory is
+// kept: it is the only remaining evidence of why the account failed, and the
+// on-disk tokens cost little next to losing the ability to diagnose the loss.
 func handleSubscriptionDead(instance *WrapperInstance, reason string) {
-	log.Warnf("[wrapper %s] subscription dead (%s); removing instance and data", shortID(instance.Id), reason)
+	log.Warnf("[wrapper %s] subscription dead (%s); retiring instance (data kept for diagnosis)", shortID(instance.Id), reason)
 	instance.NoRestart = true
 	_ = KillWrapper(instance.Id)
 	RemoveInstance(instance)
-	_ = RemoveWrapperDataQuiet(instance.Id)
 	SaveInstances()
 }
 
@@ -555,6 +599,9 @@ func WrapperStart(id string) {
 	} else {
 		instance.Port = GenerateUniquePort()
 		instance.NoRestart = false
+		// Region is only trusted after this process's /status confirms it;
+		// a persisted value must not make a starting instance selectable.
+		instance.Region = ""
 	}
 
 	log.Infof("[wrapper %s] starting lite on port %d", shortID(id), instance.Port)
@@ -622,8 +669,23 @@ func KillWrapper(id string) error {
 		return fmt.Errorf("instance %s process is nil", id)
 	}
 	pid := instance.Cmd.Process.Pid
+
+	// Ask lite to stop cleanly first: its signal worker saves the token cache
+	// and stops the HTTP server on SIGTERM. Escalate to SIGKILL only when it
+	// does not exit within the grace period (e.g. stuck in a native call).
+	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil {
+		if err := instance.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			return err
+		}
+	}
+	if instance.Exited != nil {
+		select {
+		case <-instance.Exited:
+			return nil
+		case <-time.After(5 * time.Second):
+		}
+	}
 	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
-		// Fall back to killing just the leader when the group does not exist.
 		return instance.Cmd.Process.Kill()
 	}
 	return nil

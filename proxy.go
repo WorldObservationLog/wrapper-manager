@@ -5,27 +5,54 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	log "github.com/sirupsen/logrus"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
+
+// Per-endpoint admission control and timeouts.
+//
+// /key and /m3u8 are serialized inside wrapper-lite by a single playback mutex
+// (g_playback_mutex), so the manager admits exactly one request per instance
+// for those paths. Other endpoints use the broader per-instance cap.
+const (
+	playbackSlotTimeout     = 2 * time.Second
+	otherSlotTimeout        = 5 * time.Second
+	playbackUpstreamTimeout = 10 * time.Second
+	otherUpstreamTimeout    = 12 * time.Second
+)
+
+func isPlaybackPath(path string) bool {
+	return path == "/key" || path == "/m3u8"
+}
 
 // fetchFromLite performs a request against one lite instance and returns the
 // raw response body plus the lite business code. Nothing is written to w, so
 // callers may retry on another instance before emitting a response.
 //
-// Concurrency per instance is capped (instanceConcurrency); when all slots are
-// busy for slotTimeout the call fails fast with a busy error instead of
-// queueing unboundedly behind a saturated instance.
+// Admission is per instance: one playback slot for /key and /m3u8 (matching
+// lite's global playback mutex), and the general instanceConcurrency slots for
+// the other endpoints.
 func fetchFromLite(inst *WrapperInstance, method, path string, query url.Values, body []byte) (respBody []byte, liteCode int, err error) {
-	const slotTimeout = 15 * time.Second
-	if !inst.acquireInstanceSlot(slotTimeout) {
+	playback := isPlaybackPath(path)
+	slotTimeout := otherSlotTimeout
+	upstreamTimeout := otherUpstreamTimeout
+	acquire := inst.acquireInstanceSlot
+	release := inst.releaseInstanceSlot
+	if playback {
+		slotTimeout = playbackSlotTimeout
+		upstreamTimeout = playbackUpstreamTimeout
+		acquire = inst.acquirePlaybackSlot
+		release = inst.releasePlaybackSlot
+	}
+	if !acquire(slotTimeout) {
 		return nil, -1, fmt.Errorf("instance %s busy", shortID(inst.Id))
 	}
-	defer inst.releaseInstanceSlot()
+	defer release()
 
 	target := fmt.Sprintf("http://127.0.0.1:%d%s", inst.Port, path)
 	req, err := http.NewRequest(method, target, bytes.NewReader(body))
@@ -38,10 +65,9 @@ func fetchFromLite(inst *WrapperInstance, method, path string, query url.Values,
 	req.Header.Set("Content-Type", "application/json")
 
 	// Bound a single forwarded request so a hung lite call cannot hold the
-	// per-instance slot (and thus the whole manager) indefinitely. Measured
-	// latency shows healthy requests complete within ~1s with nothing in the
-	// 5-15s band, so a hung instance is cut off well before the old 30s.
-	const upstreamTimeout = 12 * time.Second
+	// per-instance slot (and thus the whole manager) indefinitely. Healthy
+	// requests complete within ~1s; playback gets a tighter bound because the
+	// lite side serializes it.
 	ctx, cancel := context.WithTimeout(context.Background(), upstreamTimeout)
 	defer cancel()
 	req = req.WithContext(ctx)
@@ -107,58 +133,42 @@ func writeLiteBody(w http.ResponseWriter, path string, respBody []byte, liteCode
 	_, _ = w.Write(respBody)
 }
 
-// proxyToLite forwards an HTTP request to the given lite instance and writes
-// the lite response through unchanged (used when no retry logic is needed).
-func proxyToLite(w http.ResponseWriter, inst *WrapperInstance, method, path string, query url.Values, body []byte) {
-	respBody, code, err := fetchFromLite(inst, method, path, query, body)
-	if err != nil {
-		WriteLiteError(w, fmt.Sprintf("upstream error: %v", err))
-		return
-	}
-	writeLiteBody(w, path, respBody, code)
-}
-
 // Retry policy for lite business failures. A request is retried on another
-// instance only when the failure could plausibly differ per instance; retrying
-// a content-level verdict (e.g. "this track has no lyrics in that language")
-// multiplies latency for an identical answer, and walking every candidate is
-// what made /lyrics slow.
+// instance only when the failure could plausibly differ per instance.
+//
+// /lyrics 404 is region-specific in both directions: one storefront can have
+// the requested language while another does not. It is therefore retryable
+// here, but the attempt count and the overall budget keep a genuinely
+// lyric-less song from walking the whole pool.
 const (
 	maxRetryAttempts   = 3
-	overallRetryBudget = 20 * time.Second
+	overallRetryBudget = 18 * time.Second
 )
 
 // shouldRetryLiteFailure reports whether a lite business failure (non-zero
 // code) is worth retrying on another instance.
 //
-// Not retryable:
-//   - 400: the caller's request is malformed; every instance returns the same.
-//   - /lyrics 404: Apple reported no lyrics for that language, which is a
-//     content-level result identical on every instance.
-//
-// Everything else (5xx, /m3u8 404, ...) may be instance-specific and is
-// retried on another candidate.
+// Not retryable: 400 - the caller's request is malformed; every instance
+// returns the same.
 func shouldRetryLiteFailure(path string, code int) bool {
 	if code == 400 {
-		return false
-	}
-	if path == "/lyrics" && code == 404 {
 		return false
 	}
 	return true
 }
 
 // selectAndProxy picks an instance able to serve adamId and proxies the
-// request to it. If the selected instance fails at the lite business layer in
-// a way that another instance might serve, it retries on further candidates,
-// bounded by both an attempt count and an overall time budget so a single
-// request cannot walk every instance (or stack several upstream timeouts).
+// request to it. Candidate order comes from the routing cache: last successful
+// instance first, then instances not known to have failed for this item, then
+// the rest. Up to maxRetryAttempts candidates are tried inside the overall
+// budget.
 func selectAndProxy(w http.ResponseWriter, r *http.Request, path string, adamID string, body []byte) {
-	candidates, err := SelectInstances(adamID)
-	if err != nil {
-		WriteLiteError(w, err.Error())
-		return
-	}
+	selectAndProxyCandidates(w, r, path, adamID, adamID, candidateIDs(adamID), body)
+}
+
+// selectAndProxyCandidates is selectAndProxy with an explicit candidate list
+// and routing-cache key (used by /lyrics for language-preferred ordering).
+func selectAndProxyCandidates(w http.ResponseWriter, r *http.Request, path string, adamID string, routeKey string, candidates []string, body []byte) {
 	if len(candidates) == 0 {
 		WriteLiteError(w, "no available instance")
 		return
@@ -181,15 +191,24 @@ func selectAndProxy(w http.ResponseWriter, r *http.Request, path string, adamID 
 		respBody, code, ferr := fetchFromLite(inst, r.Method, path, query, body)
 		if ferr != nil {
 			log.Warnf("%s on instance %s transport error: %v", path, shortID(id), ferr)
+			noteInstanceFailure(routeKey, id)
 			continue
 		}
-		// Return on success, on the final candidate, or when the failure is a
-		// content-level verdict that another instance cannot change.
-		if code == 0 || i == len(candidates)-1 || !shouldRetryLiteFailure(path, code) {
+		if code == 0 {
+			noteInstanceSuccess(routeKey, id)
 			writeLiteBody(w, path, respBody, code)
 			return
 		}
-		// Instance-level failure: remember it and try another candidate.
+		retryable := shouldRetryLiteFailure(path, code)
+		if retryable {
+			noteInstanceFailure(routeKey, id)
+		}
+		// Return on the final candidate or when the failure is a caller error
+		// that another instance cannot change.
+		if i == len(candidates)-1 || !retryable {
+			writeLiteBody(w, path, respBody, code)
+			return
+		}
 		lastBody = respBody
 		lastCode = code
 		log.Infof("%s on instance %s failed (code %d); trying another", path, shortID(id), code)
@@ -233,19 +252,10 @@ func handleLiteEndpoint(w http.ResponseWriter, r *http.Request) {
 		if language == "" {
 			language = "en"
 		}
-		// script selects the transliteration script (upstream default
-		// en-Latn); it is forwarded untouched, and used for the availability
-		// probe so probing matches what the caller will actually request.
 		script := r.URL.Query().Get("script")
-		// Prefer an instance that has lyrics; otherwise fall back to the
-		// generic region-candidate selection (with per-instance retry).
-		if instID := SelectInstanceForLyrics(adamId, language, script); instID != "" {
-			if inst := GetInstance(instID); inst != nil {
-				proxyToLite(w, inst, r.Method, path, r.URL.Query(), nil)
-				return
-			}
-		}
-		selectAndProxy(w, r, path, adamId, nil)
+		// Language-preferred candidates first; the lite business response is
+		// the availability signal, so no separate HEAD probe is needed.
+		selectAndProxyCandidates(w, r, path, adamId, lyricsRouteKey(adamId, language, script), lyricsCandidateIDs(adamId, language, script), nil)
 	case "/license":
 		if r.Method != http.MethodPost {
 			WriteLiteError(w, "method not allowed")

@@ -1,48 +1,33 @@
 package main
 
-import (
-	"sync/atomic"
-	"testing"
-)
+import "testing"
 
-// TestHasLyricsCachedMemoizes verifies the availability cache prevents
-// repeated probes for the same (song, region, language, script) key.
-func TestHasLyricsCachedMemoizes(t *testing.T) {
-	var probeCount atomic.Int32
-	// Override hasLyricsProbe during the test window.
-	orig := hasLyricsProbe
-	defer func() { hasLyricsProbe = orig }()
-	hasLyricsProbe = func(adamID, region, language, script, token, musicToken string) bool {
-		probeCount.Add(1)
-		return true
+// TestRoutingCacheAffinityAndNegative pins the two routing signals that
+// replace the old Apple availability probes: a successful instance is
+// preferred for the item, a failed one is marked negative, and a later success
+// clears the negative mark.
+func TestRoutingCacheAffinityAndNegative(t *testing.T) {
+	const adamId = "routing-cache-test-adam"
+	const instanceId = "routing-cache-test-instance"
+
+	noteInstanceSuccess(adamId, instanceId)
+	if got, ok := affinityCache.Get(adamId); !ok || got != instanceId {
+		t.Fatalf("affinity = %q, %v; want %q, true", got, ok, instanceId)
 	}
 
-	// First call probes once.
-	if !hasLyricsCached("12345", "us", "en", "en-Latn", "tk", "mt") {
-		t.Fatal("expected true")
+	noteInstanceFailure(adamId, instanceId)
+	if _, ok := affinityCache.Get(adamId); ok {
+		t.Fatal("affinity should be cleared after the preferred instance fails")
 	}
-	// Second call hits the cache, no new probe.
-	if !hasLyricsCached("12345", "us", "en", "en-Latn", "tk", "mt") {
-		t.Fatal("expected true (cached)")
-	}
-	if n := probeCount.Load(); n != 1 {
-		t.Errorf("expected exactly 1 probe, got %d", n)
+	if _, ok := negativeCache.Get(negativeKey(adamId, instanceId)); !ok {
+		t.Fatal("instance should be marked negative after a failure")
 	}
 
-	// An empty script normalizes to the default, so it shares the cache entry
-	// created for "en-Latn" and does not probe again.
-	if !hasLyricsCached("12345", "us", "en", "", "tk", "mt") {
-		t.Fatal("expected true")
+	noteInstanceSuccess(adamId, instanceId)
+	if _, ok := negativeCache.Get(negativeKey(adamId, instanceId)); ok {
+		t.Fatal("negative mark should be cleared after a success")
 	}
-	if n := probeCount.Load(); n != 1 {
-		t.Errorf("empty script should hit the en-Latn entry, probes=%d", n)
-	}
-
-	// A different script is a different key, so it probes again.
-	if !hasLyricsCached("12345", "us", "en", "ja-Latn", "tk", "mt") {
-		t.Fatal("expected true")
-	}
-	if n := probeCount.Load(); n != 2 {
-		t.Errorf("expected 2 probes after script change, got %d", n)
+	if got, ok := affinityCache.Get(adamId); !ok || got != instanceId {
+		t.Fatalf("affinity = %q, %v; want %q, true", got, ok, instanceId)
 	}
 }

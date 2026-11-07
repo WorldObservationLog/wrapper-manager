@@ -72,3 +72,22 @@ func TestInstanceSemaphoreTimeout(t *testing.T) {
 		t.Error("acquisition should succeed after a slot frees")
 	}
 }
+
+// TestPlaybackSemaphoreCapsAtOne verifies /key and /m3u8 are admitted one at a
+// time per instance, matching wrapper-lite's global playback mutex.
+func TestPlaybackSemaphoreCapsAtOne(t *testing.T) {
+	inst := &WrapperInstance{Id: "playback-sem-test"}
+	inst.ensurePlaybackSem()
+
+	if !inst.acquirePlaybackSlot(time.Second) {
+		t.Fatal("first playback slot should be acquired")
+	}
+	if inst.acquirePlaybackSlot(100 * time.Millisecond) {
+		t.Error("second playback slot should time out")
+	}
+	inst.releasePlaybackSlot()
+	if !inst.acquirePlaybackSlot(time.Second) {
+		t.Error("slot should be available after release")
+	}
+	inst.releasePlaybackSlot()
+}

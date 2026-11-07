@@ -42,6 +42,7 @@ type LoginState struct {
 	mu          sync.Mutex
 	pending2FA  bool
 	reported2FA bool
+	closed      bool
 	cmd         *exec.Cmd
 
 	done chan error // nil => success; error => failure
@@ -86,9 +87,9 @@ func removeLogin(id string) {
 }
 
 // hasTokenFiles reports whether a successful login artifact exists in the
-// instance data dir (lite writes STOREFRONT_ID and MUSIC_TOKEN there).
+// instance data dir (lite writes STOREFRONT_ID, MUSIC_TOKEN and DEV_TOKEN there).
 func hasTokenFiles(id string) bool {
-	for _, name := range []string{"STOREFRONT_ID", "MUSIC_TOKEN"} {
+	for _, name := range []string{"STOREFRONT_ID", "MUSIC_TOKEN", "DEV_TOKEN"} {
 		if _, err := os.Stat(instanceDir(id) + "/" + name); err != nil {
 			return false
 		}
@@ -157,6 +158,9 @@ func runLoginChild(id, username, password string, st *LoginState) {
 	for {
 		select {
 		case werr := <-waitCh:
+			if st.isClosed() {
+				return
+			}
 			// Child exited. Token files present => success; else classify.
 			if hasTokenFiles(id) {
 				finishLoginSuccess(id, st)
@@ -198,7 +202,7 @@ func classifyLoginFailure(werr error) error {
 // is reported once (code 2); a second call (the client resubmits with a code)
 // blocks until the child exits with the final outcome.
 func waitForLoginFinish(id string, st *LoginState) LoginResult {
-	timeout := time.NewTimer(150 * time.Second)
+	timeout := time.NewTimer(660 * time.Second)
 	defer timeout.Stop()
 
 	for {
@@ -209,6 +213,14 @@ func waitForLoginFinish(id string, st *LoginState) LoginResult {
 			}
 			return LoginResult{Code: -1, Msg: err.Error(), LoginId: id}
 		case <-timeout.C:
+			// The lite login child waits up to 600s for a 2FA code; the manager's
+			// wait must cover that plus cleanup. On timeout stop the child so it
+			// cannot keep running against a data dir the manager may reuse.
+			if st.markClosed() {
+				st.killChild()
+				_ = RemoveWrapperDataQuiet(id)
+				removeLogin(id)
+			}
 			return LoginResult{Code: -1, Msg: "login timeout", LoginId: id}
 		case <-time.After(200 * time.Millisecond):
 			if st.claimPending2FA() {
@@ -222,6 +234,37 @@ func (s *LoginState) isPending2FA() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.pending2FA
+}
+
+// isClosed reports whether this login attempt was abandoned (for example by a
+// manager-side timeout). A closed attempt must not start a service or clean up
+// a newer attempt's data.
+func (s *LoginState) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+// markClosed transitions the attempt to abandoned and reports whether this
+// call performed the transition.
+func (s *LoginState) markClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	s.closed = true
+	return true
+}
+
+// killChild terminates the one-shot lite login process, if it is running.
+func (s *LoginState) killChild() {
+	s.mu.Lock()
+	cmd := s.cmd
+	s.mu.Unlock()
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
 }
 
 // claimPending2FA reports whether the login just became 2FA-pending and has
@@ -263,6 +306,9 @@ func provide2FACode(id string, code string) error {
 // process and, once the instance reports ready, resolves the login.
 func finishLoginSuccess(id string, st *LoginState) {
 	go func() {
+		if st.isClosed() {
+			return
+		}
 		instance := getInstanceOrNew(id)
 		instance.NoRestart = false
 		if err := startLiteService(instance); err != nil {
@@ -290,6 +336,9 @@ func resolveLogin(id string, st *LoginState, cause error) {
 // loginFailed cleans up the instance data and resolves the pending login with
 // an error.
 func loginFailed(id string, st *LoginState, cause error) {
+	if st.isClosed() {
+		return
+	}
 	log.Warnf("[wrapper %s] login failed: %v", shortID(id), cause)
 	_ = RemoveWrapperDataQuiet(id)
 	resolveLogin(id, st, cause)
