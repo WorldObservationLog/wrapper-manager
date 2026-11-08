@@ -157,17 +157,50 @@ func shouldRetryLiteFailure(path string, code int) bool {
 	return true
 }
 
+// isProbeOnMissPath reports whether a 404 from lite should trigger one
+// catalog lookup before continuing. Catalog availability and hasLyrics are
+// cheap relative to a blind walk over the instance pool.
+func isProbeOnMissPath(path string) bool {
+	return path == "/m3u8" || path == "/lyrics"
+}
+
+// probeCandidates is the probe-on-miss catalog lookup. Tests may swap it.
+var probeCandidates = func(path, adamID string) ([]string, error) {
+	switch path {
+	case "/lyrics":
+		return SelectInstancesWithLyrics(adamID)
+	case "/m3u8":
+		return SelectInstances(adamID)
+	default:
+		return nil, nil
+	}
+}
+
+// routeKeyForRequest keeps lyrics routing separate per language/script so a
+// 404 for one language does not poison affinity for another.
+func routeKeyForRequest(path string, r *http.Request, adamID string) string {
+	if path != "/lyrics" {
+		return adamID
+	}
+	language := r.URL.Query().Get("language")
+	if language == "" {
+		language = "en"
+	}
+	return lyricsRouteKey(adamID, language, r.URL.Query().Get("script"))
+}
+
 // selectAndProxy picks an instance able to serve adamId and proxies the
 // request to it. Candidate order comes from the routing cache: last successful
 // instance first, then instances not known to have failed for this item, then
-// the rest. Up to maxRetryAttempts candidates are tried inside the overall
-// budget.
+// the rest. For /m3u8 and /lyrics, a 404 triggers one catalog lookup so the
+// retry goes to a region that actually has the item (or lyrics) instead of
+// blindly spending the remaining attempts.
 func selectAndProxy(w http.ResponseWriter, r *http.Request, path string, adamID string, body []byte) {
-	selectAndProxyCandidates(w, r, path, adamID, adamID, candidateIDs(adamID), body)
+	selectAndProxyCandidates(w, r, path, adamID, routeKeyForRequest(path, r, adamID), candidateIDs(adamID), body)
 }
 
 // selectAndProxyCandidates is selectAndProxy with an explicit candidate list
-// and routing-cache key (used by /lyrics for language-preferred ordering).
+// and routing-cache key.
 func selectAndProxyCandidates(w http.ResponseWriter, r *http.Request, path string, adamID string, routeKey string, candidates []string, body []byte) {
 	if len(candidates) == 0 {
 		WriteLiteError(w, "no available instance")
@@ -175,14 +208,21 @@ func selectAndProxyCandidates(w http.ResponseWriter, r *http.Request, path strin
 	}
 
 	query := r.URL.Query()
+	queue := append([]string(nil), candidates...)
+	tried := make(map[string]bool, len(queue))
 	var lastBody []byte
 	var lastCode int
 	attempts := 0
+	probed := false
 	deadline := time.Now().Add(overallRetryBudget)
-	for i, id := range candidates {
-		if attempts >= maxRetryAttempts || time.Now().After(deadline) {
-			break
+
+	for len(queue) > 0 && attempts < maxRetryAttempts && time.Now().Before(deadline) {
+		id := queue[0]
+		queue = queue[1:]
+		if tried[id] {
+			continue
 		}
+		tried[id] = true
 		inst := GetInstance(id)
 		if inst == nil {
 			continue
@@ -203,15 +243,35 @@ func selectAndProxyCandidates(w http.ResponseWriter, r *http.Request, path strin
 		if retryable {
 			noteInstanceFailure(routeKey, id)
 		}
-		// Return on the final candidate or when the failure is a caller error
-		// that another instance cannot change.
-		if i == len(candidates)-1 || !retryable {
+		if !retryable {
 			writeLiteBody(w, path, respBody, code)
 			return
 		}
 		lastBody = respBody
 		lastCode = code
 		log.Infof("%s on instance %s failed (code %d); trying another", path, shortID(id), code)
+
+		// Probe-on-miss: after the first wrong-region/content 404, ask the
+		// catalog once, then retry only the instances whose region can serve
+		// the item. The probe result is cached for 24h.
+		if isProbeOnMissPath(path) && !probed && code == 404 {
+			probed = true
+			directed, derr := probeCandidates(path, adamID)
+			if derr != nil {
+				log.Warnf("%s probe failed: %v; falling back to remaining candidates", path, derr)
+				continue
+			}
+			queue = queue[:0]
+			for _, d := range directed {
+				if !tried[d] {
+					queue = append(queue, d)
+				}
+			}
+			if len(queue) == 0 {
+				writeLiteBody(w, path, lastBody, lastCode)
+				return
+			}
+		}
 	}
 	if lastBody != nil {
 		writeLiteBody(w, path, lastBody, lastCode)
@@ -248,14 +308,7 @@ func handleLiteEndpoint(w http.ResponseWriter, r *http.Request) {
 			WriteLiteError(w, "missing adamId")
 			return
 		}
-		language := r.URL.Query().Get("language")
-		if language == "" {
-			language = "en"
-		}
-		script := r.URL.Query().Get("script")
-		// Language-preferred candidates first; the lite business response is
-		// the availability signal, so no separate HEAD probe is needed.
-		selectAndProxyCandidates(w, r, path, adamId, lyricsRouteKey(adamId, language, script), lyricsCandidateIDs(adamId, language, script), nil)
+		selectAndProxy(w, r, path, adamId, nil)
 	case "/license":
 		if r.Method != http.MethodPost {
 			WriteLiteError(w, "method not allowed")

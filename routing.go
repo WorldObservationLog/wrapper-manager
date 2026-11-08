@@ -119,26 +119,3 @@ func lyricsRouteKey(adamId, language, script string) string {
 	}
 	return "lyrics|" + adamId + "|" + language + "|" + script
 }
-
-// lyricsCandidateIDs returns candidates for /lyrics: instances whose
-// storefront advertises the requested language first, then the rest. Both
-// groups keep the affinity/negative ordering used by other endpoints.
-func lyricsCandidateIDs(adamId, language, script string) []string {
-	instances := selectableInstances()
-	if len(instances) == 0 {
-		return nil
-	}
-	routeKey := lyricsRouteKey(adamId, language, script)
-	langs := ensureStorefrontLangs()
-	var tier1, tier2 []*WrapperInstance
-	for _, inst := range instances {
-		if langs != nil && langs.regionSupportsLang(inst.Region, language) {
-			tier1 = append(tier1, inst)
-		} else {
-			tier2 = append(tier2, inst)
-		}
-	}
-	ids := orderCandidates(tier1, routeKey)
-	ids = append(ids, orderCandidates(tier2, routeKey)...)
-	return ids
-}
