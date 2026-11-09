@@ -3,13 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/hashicorp/golang-lru/v2/expirable"
-	"golang.org/x/sync/singleflight"
 	"io"
 	"math/rand"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/hashicorp/golang-lru/v2/expirable"
+	"golang.org/x/sync/singleflight"
 )
 
 // songInfo is what one catalog lookup tells us about an adam ID in one
@@ -127,21 +128,6 @@ func checkAvailableOnRegion(adamId string, region string, mv bool) (bool, error)
 	return info.available, err
 }
 
-// selectableInstances returns the registered instances that are currently
-// eligible to serve requests: instances whose FairPlay circuit is open (after
-// repeated key-processing failures) are skipped until the cooldown elapses.
-func selectableInstances() []*WrapperInstance {
-	all := SnapshotInstances()
-	out := make([]*WrapperInstance, 0, len(all))
-	for _, inst := range all {
-		if circuitOpen(inst.Id) {
-			continue
-		}
-		out = append(out, inst)
-	}
-	return out
-}
-
 // SelectInstances returns ids of all instances whose region can serve the
 // given adam ID (prefers songs, falls back to music-videos). Region probes are
 // run concurrently (bounded) so first-request latency does not scale linearly
@@ -169,8 +155,9 @@ func selectInstances(adamId string, needLyrics bool) ([]string, error) {
 	const probeWorkers = 8
 	sem := make(chan struct{}, probeWorkers)
 	type res struct {
-		id string
-		ok bool
+		id  string
+		ok  bool
+		err error
 	}
 	results := make([]res, len(instances))
 	var wg sync.WaitGroup
@@ -182,10 +169,7 @@ func selectInstances(adamId string, needLyrics bool) ([]string, error) {
 			defer func() { <-sem }()
 			info, err := songLookup(adamId, inst.Region, false)
 			if err != nil {
-				// On probe error treat the region as unavailable rather than
-				// failing the whole request (matches old per-region semantics
-				// where a single error aborted selection).
-				results[i] = res{id: inst.Id, ok: false}
+				results[i] = res{id: inst.Id, err: err}
 				return
 			}
 			results[i] = res{id: inst.Id, ok: info.available && (!needLyrics || info.hasLyrics)}
@@ -194,13 +178,25 @@ func selectInstances(adamId string, needLyrics bool) ([]string, error) {
 	wg.Wait()
 
 	var selectedInstances []string
+	allErrored := true
+	var lastErr error
 	for _, r := range results {
+		if r.err == nil {
+			allErrored = false
+		} else {
+			lastErr = r.err
+		}
 		if r.ok {
 			selectedInstances = append(selectedInstances, r.id)
 		}
 	}
-	// Fall back to music-videos only when no song hit was found.
+
+	// Fall back to music-videos only when the song lookups succeeded but no
+	// region had the song.
 	if len(selectedInstances) == 0 && !needLyrics {
+		if allErrored && lastErr != nil {
+			return nil, lastErr
+		}
 		for _, inst := range instances {
 			ok, err := checkAvailableOnRegion(adamId, inst.Region, true)
 			if err != nil {
@@ -211,22 +207,13 @@ func selectInstances(adamId string, needLyrics bool) ([]string, error) {
 			}
 		}
 	}
+	if len(selectedInstances) == 0 && allErrored && lastErr != nil {
+		return nil, lastErr
+	}
+
 	// Shuffle so parallel requests do not all select the same instance.
 	rand.Shuffle(len(selectedInstances), func(i, j int) {
 		selectedInstances[i], selectedInstances[j] = selectedInstances[j], selectedInstances[i]
 	})
 	return selectedInstances, nil
-}
-
-// SelectInstance returns a single id of an instance whose region can serve
-// the given adam ID, or "" when none is available.
-func SelectInstance(adamId string) (string, error) {
-	ids, err := SelectInstances(adamId)
-	if err != nil {
-		return "", err
-	}
-	if len(ids) == 0 {
-		return "", nil
-	}
-	return ids[0], nil
 }

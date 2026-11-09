@@ -2,17 +2,19 @@ package main
 
 import "testing"
 
-// TestShouldRetryLiteFailure pins the retry policy: content-level verdicts and
-// caller errors must not be retried (they are identical on every instance),
-// while instance-level failures are worth another candidate.
+// TestShouldRetryLiteFailure pins the retry policy: caller errors must not be
+// retried, while instance-specific failures (including /lyrics 404, which can
+// differ by storefront language) are worth another candidate within the
+// bounded attempt budget.
 func TestShouldRetryLiteFailure(t *testing.T) {
 	cases := []struct {
 		path string
 		code int
 		want bool
 	}{
-		// Content-level: no lyrics in that language -> same everywhere.
-		{"/lyrics", 404, false},
+		// /lyrics 404 is region-specific: another storefront may have the
+		// requested language, so it is retried within the bounded budget.
+		{"/lyrics", 404, true},
 		// Caller error -> same everywhere.
 		{"/lyrics", 400, false},
 		{"/m3u8", 400, false},

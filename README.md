@@ -20,8 +20,8 @@ that item, and the wrapper-lite response envelope is passed through unchanged.
 ## Features
 
 - **Multi-account management** — every account = one instance; requests are
-  routed to the instance whose storefront region can serve the requested
-  `adamId` (region availability is probed against the Apple catalog).
+  routed by learned affinity and a bounded candidate sequence, without
+  querying the Apple catalog from the manager.
 - **wrapper-lite-compatible HTTP API** — `/m3u8`, `/key`, `/lyrics`,
   `/webplayback`, `/license`, plus an aggregated `/status`.
 - **`POST /login` / `POST /logout`** management endpoints, including a
@@ -67,7 +67,7 @@ package for your architecture from
 | `-port` | `8080` | Port of the HTTP server. |
 | `-mirror` | `false` | Download wrapper-lite through `gh-proxy.com` instead of nightly.link (for users in China). |
 | `-debug` | `false` | Enable debug output. |
-| `-proxy` | *(empty)* | HTTP(S) proxy used by the manager for downloads/Apple probes and passed through to wrapper-lite (`--proxy`). |
+| `-proxy` | *(empty)* | HTTP(S) proxy used by the manager for downloads (and the optional storefront-language lookup) and passed through to wrapper-lite (`--proxy`). |
 | `-prepare` | `false` | Only download the required wrapper-lite payload, then exit. |
 | `-device-info` | `Music/5.0.2/Android/10/Pixel 8/7663314/en-US/en-US` | Optional Apple Music device-info string (`--device-info` pass-through to wrapper-lite). |
 
@@ -97,7 +97,7 @@ instance"` (retry later).
 |---|---|---|---|
 | `GET` | `/m3u8` | `adamId` | Playlist for the item. |
 | `GET` | `/key` | `adamId`, `uri` (required) | Key/decryption context — `data` carries the `ctx`/`state` template used by AppleMusicDecrypt v3 + local Temari. The prefetch URI `skd://itunes.apple.com/P000000000/s1/e1` is only accepted with `adamId=0` (upstream rejects it for a real track). |
-| `GET` | `/lyrics` | `adamId`, `language?`, `syllable?`, `script?` | Routed to an instance whose storefront region has the song with `hasLyrics: true` in the catalog (same lookup and cache as the other endpoints); if no region reports lyrics it falls back to any region with the song. `language` (translation) and `script` (transliteration, default `en-Latn`, e.g. `ja-Latn`) play no part in routing and are forwarded untouched to the instance. |
+| `GET` | `/lyrics` | `adamId`, `language?`, `syllable?`, `script?` | Tries one candidate first; on a lite 404 it checks the catalog once (region availability / hasLyrics) and retries the matched region. `script` (transliteration, default `en-Latn`, e.g. `ja-Latn`) is forwarded to the instance. |
 | `GET` | `/webplayback` | `adamId` | Web-playback session data. |
 | `POST` | `/license` | JSON body `{"adamId","challenge","uri","drm-type"?}` | License request forwarded to the selected instance. Optional `drm-type`: `wv` (Widevine, default) or `pr` (PlayReady). |
 | `GET` | `/status` | — | Aggregated status: `data = {"status","regions","clientCount","ready"}`. |
