@@ -52,6 +52,7 @@ go.work.sum
 # local regression tests (kept out of commits by default)
 /routing_test.go
 /proxy_routing_test.go
+/instance_health_test.go
 
 # local research / planning / runtime artifacts
 /notes/

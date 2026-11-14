@@ -231,9 +231,13 @@ func selectAndProxyCandidates(w http.ResponseWriter, r *http.Request, path strin
 		respBody, code, ferr := fetchFromLite(inst, r.Method, path, query, body)
 		if ferr != nil {
 			log.Warnf("%s on instance %s transport error: %v", path, shortID(id), ferr)
+			if recordTransportFailure(id) {
+				log.Warnf("instance %s quarantined for %s after repeated transport failures", shortID(id), transportCooldown)
+			}
 			noteInstanceFailure(routeKey, id)
 			continue
 		}
+		recordTransportSuccess(id)
 		if code == 0 {
 			noteInstanceSuccess(routeKey, id)
 			writeLiteBody(w, path, respBody, code)

@@ -62,6 +62,9 @@ func selectableInstances() []*WrapperInstance {
 		if circuitOpen(inst.Id) {
 			continue
 		}
+		if transportCircuitOpen(inst.Id) {
+			continue
+		}
 		out = append(out, inst)
 	}
 	return out

@@ -94,7 +94,7 @@ func recordFairplayFailure(id string) bool {
 func degradedCount() int {
 	n := 0
 	for _, inst := range SnapshotInstances() {
-		if circuitOpen(inst.Id) {
+		if circuitOpen(inst.Id) || transportCircuitOpen(inst.Id) {
 			n++
 		}
 	}
@@ -107,6 +107,98 @@ func resetFairplayCircuit(id string) {
 	fairplayCircuits.Lock()
 	delete(fairplayCircuits.m, id)
 	fairplayCircuits.Unlock()
+}
+
+// Transport health circuit. FairPlay failures mean Apple rejected the content
+// key; transport failures are different: the lite process is hung, out of
+// slots, or the local HTTP call timed out. A handful of these in a short
+// window makes the instance a bad candidate for every item, so quarantine it
+// for a cooldown instead of letting every request spend the 10s timeout.
+const (
+	transportFailThreshold = 3
+	transportFailWindow    = 5 * time.Minute
+	transportCooldown      = 10 * time.Minute
+)
+
+type transportCircuitState struct {
+	fails       int
+	windowStart time.Time
+	openUntil   time.Time
+}
+
+var transportCircuits = struct {
+	sync.Mutex
+	m map[string]*transportCircuitState
+}{m: make(map[string]*transportCircuitState)}
+
+// transportCircuitOpen reports whether the instance is temporarily excluded
+// after repeated transport failures. The circuit closes automatically after
+// the cooldown so the instance gets another chance.
+func transportCircuitOpen(id string) bool {
+	transportCircuits.Lock()
+	defer transportCircuits.Unlock()
+	st, ok := transportCircuits.m[id]
+	if !ok || st.openUntil.IsZero() {
+		return false
+	}
+	if time.Now().After(st.openUntil) {
+		st.openUntil = time.Time{}
+		st.fails = 0
+		st.windowStart = time.Time{}
+		return false
+	}
+	return true
+}
+
+// recordTransportFailure counts one transport-level failure (deadline, busy,
+// connection error) and opens the circuit once the threshold is reached in the
+// rolling window. It returns true when the circuit just opened.
+func recordTransportFailure(id string) bool {
+	now := time.Now()
+	transportCircuits.Lock()
+	defer transportCircuits.Unlock()
+	st, ok := transportCircuits.m[id]
+	if !ok {
+		st = &transportCircuitState{}
+		transportCircuits.m[id] = st
+	}
+	if !st.openUntil.IsZero() && now.Before(st.openUntil) {
+		return false
+	}
+	if st.windowStart.IsZero() || now.Sub(st.windowStart) > transportFailWindow {
+		st.fails = 0
+		st.windowStart = now
+	}
+	st.fails++
+	if st.fails >= transportFailThreshold {
+		st.openUntil = now.Add(transportCooldown)
+		st.fails = 0
+		st.windowStart = time.Time{}
+		return true
+	}
+	return false
+}
+
+// recordTransportSuccess clears the rolling failure window. A business error
+// (404/500) still proves the lite transport is alive, so callers should record
+// success whenever fetchFromLite returned an HTTP response.
+func recordTransportSuccess(id string) {
+	transportCircuits.Lock()
+	defer transportCircuits.Unlock()
+	st, ok := transportCircuits.m[id]
+	if !ok || !st.openUntil.IsZero() {
+		return
+	}
+	st.fails = 0
+	st.windowStart = time.Time{}
+}
+
+// resetTransportCircuit clears transport state for an instance starting a
+// fresh lifecycle.
+func resetTransportCircuit(id string) {
+	transportCircuits.Lock()
+	delete(transportCircuits.m, id)
+	transportCircuits.Unlock()
 }
 
 // Recovery policy for account-level failure signals.
@@ -411,6 +503,7 @@ func InsertInstance(instance *WrapperInstance) {
 	// across restarts — counting signals across them is the whole point — and
 	// is reset on re-login (resetRecovery) instead.
 	resetFairplayCircuit(instance.Id)
+	resetTransportCircuit(instance.Id)
 	Instances = append(Instances, instance)
 }
 
